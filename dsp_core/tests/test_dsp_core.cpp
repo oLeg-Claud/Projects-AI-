@@ -375,7 +375,7 @@ void test_real_smp_file_player() {
     cfg.source_type    = DSP_SRC_FILE_PLAYER;
     cfg.uso_bit_mode   = 32;
     cfg.playback_speed = 0;
-    std::snprintf(cfg.port_or_path, sizeof(cfg.port_or_path), "%s", "../tek/smp/26-06-26 15-44-56.smp");
+    std::snprintf(cfg.port_or_path, sizeof(cfg.port_or_path), "%s", "C:\\Projects\\AI\\TelesystemAiStudio\\dsp_core\\out\\build\\26-06-26 09-23-41.smp");
 
     struct SmpStats {
         int64_t total_samples = 0;

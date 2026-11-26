@@ -25,13 +25,16 @@ target_include_directories(DspCore
 
 target_compile_definitions(DspCore PRIVATE DSPCORE_EXPORTS)
 
+
 if(MSVC)
-    target_compile_options(DspCore PRIVATE /W4 /O2)
+    target_compile_options(DspCore PRIVATE /W4)
+    # Если очень нужно включить /O2 даже в Debug-сборке, раскомментируйте строку ниже:
+    # string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
     if(DSPCORE_ENABLE_AVX2)
         target_compile_options(DspCore PRIVATE /arch:AVX2)
     endif()
 else()
-    target_compile_options(DspCore PRIVATE -Wall -Wextra -Wpedantic -O3 -fvisibility=hidden)
+    target_compile_options(DspCore PRIVATE -Wall -Wextra -Wpedantic -fvisibility=hidden)
     if(DSPCORE_ENABLE_AVX2 AND (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64"))
         target_compile_options(DspCore PRIVATE -mavx2 -mfma)
     endif()
@@ -40,6 +43,8 @@ else()
         target_link_libraries(DspCore PRIVATE Threads::Threads)
     endif()
 endif()
+
+
 
 # Output name: DspCore.dll (Windows) / libDspCore.so (Linux)
 set_target_properties(DspCore PROPERTIES
