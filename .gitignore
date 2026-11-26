@@ -1,0 +1,26 @@
+# Track only dsp_core/ files when syncing/pushing to GitHub
+*
+!/.gitignore
+!/dsp_core/
+!/dsp_core/.gitignore
+!/dsp_core/CMakeLists.txt
+!/dsp_core/Makefile
+!/dsp_core/README.md
+!/dsp_core/include/
+!/dsp_core/include/**
+!/dsp_core/src/
+!/dsp_core/src/**
+!/dsp_core/tests/
+!/dsp_core/tests/**
+
+# Exclude build artifacts and compiled binaries
+dsp_core/build/
+dsp_core/**/*.o
+dsp_core/**/*.obj
+dsp_core/**/*.so
+dsp_core/**/*.dll
+dsp_core/**/*.dylib
+dsp_core/**/*.a
+dsp_core/**/*.lib
+dsp_core/**/*.exe
+dsp_core/**/test_dsp_core
