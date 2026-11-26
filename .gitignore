@@ -1,4 +1,4 @@
-# Track only dsp_core/ files when syncing/pushing to GitHub
+# Track only Stage 1 (dsp_core/) and Stage 2 (ProvodkaNG/) files when syncing to GitHub
 *
 !/.gitignore
 !/dsp_core/
@@ -13,7 +13,10 @@
 !/dsp_core/tests/
 !/dsp_core/tests/**
 
-# Exclude build artifacts and compiled binaries
+!/ProvodkaNG/
+!/ProvodkaNG/**
+
+# Exclude C++ build artifacts and compiled binaries
 dsp_core/build/
 dsp_core/**/*.o
 dsp_core/**/*.obj
@@ -24,3 +27,10 @@ dsp_core/**/*.a
 dsp_core/**/*.lib
 dsp_core/**/*.exe
 dsp_core/**/test_dsp_core
+
+# Exclude .NET build artifacts and IDE caches
+ProvodkaNG/**/bin/
+ProvodkaNG/**/obj/
+ProvodkaNG/.vs/
+ProvodkaNG/**/*.user
+

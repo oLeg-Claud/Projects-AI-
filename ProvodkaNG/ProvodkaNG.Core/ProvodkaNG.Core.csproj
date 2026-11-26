@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>ProvodkaNG.Core</RootNamespace>
+    <AssemblyName>ProvodkaNG.Core</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <!-- Automatically copy compiled native DspCore library if built in ../dsp_core/build -->
+  <ItemGroup>
+    <None Include="..\..\dsp_core\build\Release\DspCore.dll"
+          Condition="Exists('..\..\dsp_core\build\Release\DspCore.dll')"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="DspCore.dll" />
+    <None Include="..\..\dsp_core\build\DspCore.dll"
+          Condition="Exists('..\..\dsp_core\build\DspCore.dll')"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="DspCore.dll" />
+    <None Include="..\..\dsp_core\build\libDspCore.so"
+          Condition="Exists('..\..\dsp_core\build\libDspCore.so')"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="libDspCore.so" />
+    <None Include="..\..\dsp_core\build\libDspCore.dylib"
+          Condition="Exists('..\..\dsp_core\build\libDspCore.dylib')"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="libDspCore.dylib" />
+  </ItemGroup>
+</Project>
