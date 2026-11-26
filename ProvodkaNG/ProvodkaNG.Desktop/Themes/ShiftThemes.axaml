@@ -1,0 +1,74 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Styles.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.ThemeDictionaries>
+        <!-- Ночная вахта (Night Shift — high contrast dark industrial cockpit) -->
+        <ResourceDictionary x:Key="Dark">
+          <SolidColorBrush x:Key="BgCanvasBrush" Color="#0B0F14" />
+          <SolidColorBrush x:Key="BgPanelBrush" Color="#131922" />
+          <SolidColorBrush x:Key="BgCardBrush" Color="#1A222E" />
+          <SolidColorBrush x:Key="BorderSubtleBrush" Color="#283344" />
+          <SolidColorBrush x:Key="TextPrimaryBrush" Color="#F1F5F9" />
+          <SolidColorBrush x:Key="TextSecondaryBrush" Color="#94A3B8" />
+          <SolidColorBrush x:Key="AccentAmberBrush" Color="#F59E0B" />
+          <SolidColorBrush x:Key="AccentCyanBrush" Color="#22D3EE" />
+          <SolidColorBrush x:Key="StatusOkBrush" Color="#10B981" />
+          <SolidColorBrush x:Key="StatusWarnBrush" Color="#F59E0B" />
+          <SolidColorBrush x:Key="StatusAlarmBrush" Color="#EF4444" />
+        </ResourceDictionary>
+
+        <!-- Дневная вахта (Day Shift — sunlight-readable high contrast) -->
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="BgCanvasBrush" Color="#E8EDF2" />
+          <SolidColorBrush x:Key="BgPanelBrush" Color="#F8FAFC" />
+          <SolidColorBrush x:Key="BgCardBrush" Color="#FFFFFF" />
+          <SolidColorBrush x:Key="BorderSubtleBrush" Color="#CBD5E1" />
+          <SolidColorBrush x:Key="TextPrimaryBrush" Color="#0F172A" />
+          <SolidColorBrush x:Key="TextSecondaryBrush" Color="#475569" />
+          <SolidColorBrush x:Key="AccentAmberBrush" Color="#B45309" />
+          <SolidColorBrush x:Key="AccentCyanBrush" Color="#0369A1" />
+          <SolidColorBrush x:Key="StatusOkBrush" Color="#047857" />
+          <SolidColorBrush x:Key="StatusWarnBrush" Color="#B45309" />
+          <SolidColorBrush x:Key="StatusAlarmBrush" Color="#B91C1C" />
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+    </ResourceDictionary>
+  </Styles.Resources>
+
+  <Style Selector="Border.panel">
+    <Setter Property="Background" Value="{DynamicResource BgPanelBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderSubtleBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="4" />
+    <Setter Property="Padding" Value="12" />
+  </Style>
+
+  <Style Selector="Border.kpi-card">
+    <Setter Property="Background" Value="{DynamicResource BgCardBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderSubtleBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="4" />
+    <Setter Property="Padding" Value="10,8" />
+  </Style>
+
+  <Style Selector="TextBlock.kpi-label">
+    <Setter Property="FontSize" Value="11" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+  </Style>
+
+  <Style Selector="TextBlock.kpi-value">
+    <Setter Property="FontSize" Value="24" />
+    <Setter Property="FontWeight" Value="Bold" />
+    <Setter Property="FontFamily" Value="Consolas, JetBrains Mono, monospace" />
+    <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+  </Style>
+
+  <Style Selector="TextBlock.section-title">
+    <Setter Property="FontSize" Value="12" />
+    <Setter Property="FontWeight" Value="Bold" />
+    <Setter Property="LetterSpacing" Value="0.8" />
+    <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+  </Style>
+</Styles>

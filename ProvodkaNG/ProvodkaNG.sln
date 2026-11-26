@@ -1,0 +1,33 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.8.34330.188
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProvodkaNG.Core", "ProvodkaNG.Core\ProvodkaNG.Core.csproj", "{6C44D2C7-9C35-4F90-8E22-1F20A1B54A01}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProvodkaNG.Desktop", "ProvodkaNG.Desktop\ProvodkaNG.Desktop.csproj", "{6C44D2C7-9C35-4F90-8E22-1F20A1B54A02}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProvodkaNG.Tests", "ProvodkaNG.Tests\ProvodkaNG.Tests.csproj", "{6C44D2C7-9C35-4F90-8E22-1F20A1B54A03}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A01}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A01}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A01}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A01}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A02}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A02}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A02}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A02}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A03}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A03}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A03}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6C44D2C7-9C35-4F90-8E22-1F20A1B54A03}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
