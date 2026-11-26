@@ -1,5 +1,4 @@
 using Avalonia.Controls;
-using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using ProvodkaNG.Desktop.ViewModels;
 
@@ -10,13 +9,21 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        DataContextChanged += OnDataContextChanged;
     }
 
-    private async void OnBrowseSmpClick(object? sender, RoutedEventArgs e)
+    private void OnDataContextChanged(object? sender, EventArgs e)
     {
-        if (DataContext is not MainWindowViewModel vm)
-            return;
+        if (DataContext is MainWindowViewModel vm)
+        {
+            vm.PickSmpFileAsync = PickSmpFileAsync;
+            vm.PickFirFileAsync = PickFirFileAsync;
+            vm.RequestExit = Close;
+        }
+    }
 
+    private async Task<string?> PickSmpFileAsync()
+    {
         IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
             Title = "Выбор бинарной записи сигнала (.smp)",
@@ -28,21 +35,11 @@ public partial class MainWindow : Window
             ]
         });
 
-        if (files.Count > 0)
-        {
-            string? localPath = files[0].TryGetLocalPath();
-            if (!string.IsNullOrEmpty(localPath))
-            {
-                vm.SetSmpFilePath(localPath);
-            }
-        }
+        return files.Count > 0 ? files[0].TryGetLocalPath() : null;
     }
 
-    private async void OnBrowseFirClick(object? sender, RoutedEventArgs e)
+    private async Task<string?> PickFirFileAsync()
     {
-        if (DataContext is not MainWindowViewModel vm)
-            return;
-
         IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
             Title = "Выбор файла коэффициентов КИХ-фильтра (KIH*.dat)",
@@ -54,13 +51,6 @@ public partial class MainWindow : Window
             ]
         });
 
-        if (files.Count > 0)
-        {
-            string? localPath = files[0].TryGetLocalPath();
-            if (!string.IsNullOrEmpty(localPath))
-            {
-                vm.SetFirFilePath(localPath);
-            }
-        }
+        return files.Count > 0 ? files[0].TryGetLocalPath() : null;
     }
 }

@@ -214,7 +214,7 @@ VectorDecodeResult SoftCorrelator::decode_vector(
     int32_t search_ig,
     int32_t frame_phase
 ) const {
-    VectorDecodeResult res{0, 0, 0, 0.0};
+    VectorDecodeResult res{};
     if (!window_ptr) return res;
 
     const int32_t ig = std::max<int32_t>(0, search_ig);
@@ -237,6 +237,11 @@ VectorDecodeResult SoftCorrelator::decode_vector(
             DSP_VEC_SAMPLES
         );
         const double corr = (dot * phase_sign) / std::sqrt(vec_energies_[static_cast<size_t>(c)] * nominal_xkv);
+        int32_t score_pct = static_cast<int32_t>(std::lround(corr * 100.0));
+        if (score_pct > 100) score_pct = 100;
+        if (score_pct < -100) score_pct = -100;
+        res.code_scores_pct[c] = score_pct;
+
         const double a = std::fabs(corr);
         if (a > best_stage1_abs) {
             best_stage1_abs = a;

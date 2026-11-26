@@ -176,6 +176,7 @@ struct DspEngine {
                             vevt.reliability_pct = vres.reliability_pct;
                             vevt.peak_offset_ig  = vres.peak_offset_ig;
                             vevt.phase_polarity  = frame_phase;
+                            std::memcpy(vevt.code_scores_pct, vres.code_scores_pct, sizeof(vevt.code_scores_pct));
                             callbacks.on_vector(&vevt, callbacks.user_data);
                         }
 
@@ -372,7 +373,8 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_start(DspEngine* engine) {
 
     engine->running.store(true);
     engine->worker = std::thread([engine]() {
-        std::vector<double> chunk(128, 0.0);
+        /* 16 samples @ 250 Hz = 64 ms per chunk -> smooth ~16 FPS real-time oscilloscope & FFT updates */
+        std::vector<double> chunk(16, 0.0);
         while (engine->running.load()) {
             int32_t overflow = 0;
             int32_t got = 0;
@@ -443,8 +445,21 @@ DSPCORE_API const char* DSPCORE_CALL dsp_get_simd_isa(void) {
     return dsp::active_simd_isa_name();
 }
 
+DSPCORE_API int32_t DSPCORE_CALL dsp_is_running(const DspEngine* engine) {
+    if (!engine) return 0;
+    return engine->running.load() ? 1 : 0;
+}
+
 DSPCORE_API int32_t DSPCORE_CALL dsp_probe_legacy_uso(const char* port_name, int32_t* out_uso_id) {
     return dsp::LegacySerialUsoSource::probe_port(port_name, out_uso_id);
+}
+
+DSPCORE_API int32_t DSPCORE_CALL dsp_scan_legacy_uso(
+    char* out_port_buf,
+    int32_t buf_len,
+    int32_t* out_uso_id
+) {
+    return dsp::LegacySerialUsoSource::scan_ports(out_port_buf, buf_len, out_uso_id);
 }
 
 DSPCORE_API int32_t DSPCORE_CALL dsp_parse_legacy_packet(

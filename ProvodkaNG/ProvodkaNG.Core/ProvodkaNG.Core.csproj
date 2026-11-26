@@ -7,14 +7,26 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
-  <!-- Automatically copy compiled native DspCore library if built in ../dsp_core/build -->
+  <!-- Automatically copy compiled native DspCore library from CMake build directories -->
   <ItemGroup>
+    <None Include="..\..\dsp_core\out\build\x64-Release\DspCore.dll"
+          Condition="Exists('..\..\dsp_core\out\build\x64-Release\DspCore.dll')"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="DspCore.dll" />
+    <None Include="..\..\dsp_core\out\build\x64-Debug\DspCore.dll"
+          Condition="!Exists('..\..\dsp_core\out\build\x64-Release\DspCore.dll') and Exists('..\..\dsp_core\out\build\x64-Debug\DspCore.dll')"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="DspCore.dll" />
+    <None Include="..\..\dsp_core\out\build\DspCore.dll"
+          Condition="!Exists('..\..\dsp_core\out\build\x64-Release\DspCore.dll') and !Exists('..\..\dsp_core\out\build\x64-Debug\DspCore.dll') and Exists('..\..\dsp_core\out\build\DspCore.dll')"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="DspCore.dll" />
     <None Include="..\..\dsp_core\build\Release\DspCore.dll"
-          Condition="Exists('..\..\dsp_core\build\Release\DspCore.dll')"
+          Condition="!Exists('..\..\dsp_core\out\build\x64-Release\DspCore.dll') and !Exists('..\..\dsp_core\out\build\x64-Debug\DspCore.dll') and !Exists('..\..\dsp_core\out\build\DspCore.dll') and Exists('..\..\dsp_core\build\Release\DspCore.dll')"
           CopyToOutputDirectory="PreserveNewest"
           Link="DspCore.dll" />
     <None Include="..\..\dsp_core\build\DspCore.dll"
-          Condition="Exists('..\..\dsp_core\build\DspCore.dll')"
+          Condition="!Exists('..\..\dsp_core\out\build\x64-Release\DspCore.dll') and !Exists('..\..\dsp_core\out\build\x64-Debug\DspCore.dll') and !Exists('..\..\dsp_core\out\build\DspCore.dll') and !Exists('..\..\dsp_core\build\Release\DspCore.dll') and Exists('..\..\dsp_core\build\DspCore.dll')"
           CopyToOutputDirectory="PreserveNewest"
           Link="DspCore.dll" />
     <None Include="..\..\dsp_core\build\libDspCore.so"

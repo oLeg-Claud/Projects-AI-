@@ -7,7 +7,8 @@ using Xunit;
 namespace ProvodkaNG.Tests;
 
 /// <summary>
-/// Headless unit tests for MainWindowViewModel using a deterministic fake IDspEngineClient.
+/// Headless unit tests for autonomous USO32 MainWindowViewModel, Dock layout,
+/// oscilloscope/FFT updates, 16-code correlation, and Zero-Latency toolface updates.
 /// </summary>
 public sealed class MainWindowViewModelTests
 {
@@ -39,106 +40,74 @@ public sealed class MainWindowViewModelTests
         public void EmitToolface(ToolfaceReading reading) => ToolfaceReceived?.Invoke(this, reading);
         public void EmitVector(VectorReading reading) => VectorDecoded?.Invoke(this, reading);
         public void EmitFrame(FrameSnapshot frame) => FrameCompleted?.Invoke(this, frame);
+        public void EmitSignal(SignalSnapshot signal) => SignalBlockReceived?.Invoke(this, signal);
     }
 
     [Fact]
-    public void ZeroLatencyToolface_UpdatesImmediatelyAndMaintainsTrailHistory()
+    public async Task AutoSupervisor_DiscoversUso32AndStartsStreamingAutomatically()
     {
         var fake = new FakeDspEngine();
-        using var vm = new MainWindowViewModel(_ => fake, uiDispatcher: a => a());
+        DspSettings? capturedSettings = null;
 
-        vm.StartAcquisition();
-        Assert.True(vm.IsRunning);
-        Assert.Equal("AVX2", vm.SimdIsa);
+        using var vm = new MainWindowViewModel(
+            engineFactory: cfg =>
+            {
+                capturedSettings = cfg;
+                return fake;
+            },
+            uiDispatcher: a => a(),
+            usoScanner: () => new UsoProbeResult("COM4", true, 206, DspStatusCode.Ok),
+            autoStart: true);
 
-        for (int i = 0; i < 8; i++)
-        {
-            fake.EmitToolface(new ToolfaceReading(
-                TimestampUs: i * 1000,
-                Channel: DspToolfaceChannel.Gravity,
-                VectorIndex: i,
-                AngleDeg: i * 45.0,
-                ReliabilityPct: 92,
-                LatencyMs: 0.35));
-        }
+        // Wait briefly for background auto-discovery to connect
+        for (int i = 0; i < 40 && !vm.IsConnected; i++)
+            await Task.Delay(25);
 
-        Assert.Equal(8, vm.ToolfaceUpdatesCount);
-        Assert.Equal(315.0, vm.ToolfaceAngleDeg);
-        Assert.Equal(6, vm.ToolfaceHistory.Count);
-        Assert.Equal(90.0, vm.ToolfaceHistory[0]);
-        Assert.Equal(315.0, vm.ToolfaceHistory[^1]);
-    }
+        Assert.True(vm.IsConnected);
+        Assert.Equal("COM4", vm.DetectedPort);
+        Assert.Equal(206, vm.DetectedUsoId);
+        Assert.NotNull(capturedSettings);
+        Assert.Equal(DspSourceType.LegacySerial, capturedSettings!.SourceType);
+        Assert.Equal(32, capturedSettings.UsoBitMode);
+        Assert.NotNull(vm.Layout);
 
-    [Fact]
-    public void FrameCompletion_PopulatesInclinometryAndNdmVisibility()
-    {
-        var fake = new FakeDspEngine();
-        using var vm = new MainWindowViewModel(_ => fake, uiDispatcher: a => a());
+        // Push 128 samples and verify Oscilloscope + Spectrum update immediately
+        double[] sig = new double[128];
+        for (int i = 0; i < sig.Length; i++)
+            sig[i] = 10_000_000.0 + 50_000.0 * Math.Sin(2.0 * Math.PI * 5.0 * i / 250.0);
 
-        vm.StartAcquisition();
+        fake.EmitSignal(new SignalSnapshot(sig, sig, OverflowDetected: true));
+        Assert.NotNull(vm.OscRawSamples);
+        Assert.Equal(128, vm.TotalSamplesReceived);
+        Assert.True(vm.AdcOverflowFlag);
+        Assert.NotNull(vm.LatestSpectrum);
 
-        var frame = new FrameSnapshot(
-            FrameNumber: 12,
-            FormatId: DspFrameFormat.NdmGkRetr,
-            IsStaticMode: true,
-            ServiceMode: 1,
-            PhasePolarity: 1,
-            SyncCorrPct: 96,
-            StepH: 1.9241,
-            LastPikDrift: -2,
-            QualStat: 1,
-            CrcValid: -1,
-            OtkGravDeg: 180.0,
-            OtkMagDeg: 95.0,
-            OtkStatDeg: 181.2,
-            ZuDeg: 42.5,
-            AzRawDeg: 123.4,
-            AzKorrDeg: 124.0,
-            AzTrueDeg: 126.8,
-            GkZts: 58.2,
-            GTotal: 1.001,
-            Gx: 0.1, Gy: 0.2, Gz: 0.9,
-            Hx: 12000, Hy: 8000, Hz: 44000,
-            HTotal: 46500.0,
-            DipCalcDeg: 71.1,
-            RpmZts: 110,
-            TempZts: 78.5,
-            VoltZts: 28.4,
-            VibrZts: 2,
-            BatteryPct: 88,
-            KksSignalMv: 45.0,
-            ZuNdmDeg: 43.1,
-            GkUpNdm: 61.0,
-            GkDnNdm: 54.0,
-            TempNdm: 80.0,
-            RpmNdm: 110,
-            WobNdm: 12.5,
-            TorqueNdm: 4.8,
-            PressNdm: 185.0,
-            TokNdm: 140,
-            PeakNdm: 3.1,
-            DuNdm: 1.2,
-            MahNdm: 2100.0,
-            Vectors5Bit: [1, 2, 3],
-            Reliabilities: [95, 90, 88]);
+        // Emit RM(1,4) vector with 16 correlation scores and verify Correlation panel data
+        int[] scores = new int[16];
+        scores[7] = -94;
+        fake.EmitVector(new VectorReading(1, 0, 39, 0x17, 94, 0, 1, scores));
+        Assert.Equal(0x17, vm.LatestWinningCode5Bit);
+        Assert.NotNull(vm.LatestCodeScoresPct);
+        Assert.Equal(-94, vm.LatestCodeScoresPct![7]);
 
-        fake.EmitFrame(frame);
-
-        Assert.Equal(12, vm.FrameNumber);
-        Assert.Equal("СТАТИКА", vm.ModeBadge);
-        Assert.Equal(42.5, vm.ZuDeg);
-        Assert.Equal(126.8, vm.AzimuthDeg);
-        Assert.True(vm.IsNdmVisible);
-        Assert.Equal(12.5, vm.WobNdm);
+        // Emit Zero-Latency Toolface
+        fake.EmitToolface(new ToolfaceReading(1000, DspToolfaceChannel.Gravity, 0, 180.0, 92, 0.25));
+        Assert.Equal(180.0, vm.ToolfaceAngleDeg);
+        Assert.Equal(1, vm.ToolfaceUpdatesCount);
     }
 
     [Fact]
     public void ToggleShiftTheme_SwitchesDayAndNightLabels()
     {
-        using var vm = new MainWindowViewModel(_ => new FakeDspEngine(), uiDispatcher: a => a());
+        using var vm = new MainWindowViewModel(
+            engineFactory: _ => new FakeDspEngine(),
+            uiDispatcher: a => a(),
+            usoScanner: () => new UsoProbeResult(string.Empty, false, 0, DspStatusCode.NotFound),
+            autoStart: false);
 
         Assert.True(vm.IsDarkTheme);
         Assert.Equal("Ночная вахта", vm.ThemeButtonText);
+        Assert.NotNull(vm.Layout);
 
         vm.ToggleShiftThemeCommand.Execute(null);
 

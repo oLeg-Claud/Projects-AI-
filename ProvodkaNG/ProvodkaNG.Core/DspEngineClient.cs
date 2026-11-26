@@ -45,7 +45,15 @@ public sealed unsafe class DspEngineClient : IDspEngineClient
     private readonly DspOnFrameNativeCallback _onFrameDelegate;
     private readonly DspOnSignalNativeCallback _onSignalDelegate;
 
-    public bool IsRunning => _isRunning;
+    public bool IsRunning
+    {
+        get
+        {
+            if (!_isRunning || _disposed || _handle == nint.Zero)
+                return false;
+            return DspNativeMethods.IsRunning(_handle) != 0;
+        }
+    }
     public string SimdIsa => DspNativeMethods.GetSimdIsa();
 
     public double CurrentStepH
@@ -113,6 +121,21 @@ public sealed unsafe class DspEngineClient : IDspEngineClient
         DspNativeMethods.EnsureResolverRegistered();
         DspStatusCode status = DspNativeMethods.ProbeLegacyUso(portName, out int usoId);
         return new UsoProbeResult(portName, status == DspStatusCode.Ok, usoId, status);
+    }
+
+    /// <summary>
+    /// Automatically enumerates all OS serial ports (Windows SERIALCOMM / Linux ttyUSB+ttyACM)
+    /// and returns the first responding legacy USO32 port and ID.
+    /// </summary>
+    public static UsoProbeResult ScanLegacyUso()
+    {
+        DspNativeMethods.EnsureResolverRegistered();
+        byte* buf = stackalloc byte[DspConstants.PathBufferSize];
+        DspStatusCode status = DspNativeMethods.ScanLegacyUso(buf, DspConstants.PathBufferSize, out int usoId);
+        string port = status == DspStatusCode.Ok
+            ? DspConfigNative.ReadNullTerminatedUtf8(buf, DspConstants.PathBufferSize)
+            : string.Empty;
+        return new UsoProbeResult(port, status == DspStatusCode.Ok, usoId, status);
     }
 
     public static (DspStatusCode Status, int Sample) ParseLegacyPacket(ReadOnlySpan<byte> packet, int bitMode)

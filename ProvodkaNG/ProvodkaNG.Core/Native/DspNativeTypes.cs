@@ -154,10 +154,10 @@ public struct DspToolfaceEventNative
 }
 
 /// <summary>
-/// Blittable mirror of DspVectorEvent (sizeof = 28 bytes, align = 4).
+/// Blittable mirror of DspVectorEvent (sizeof = 92 bytes, align = 4).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct DspVectorEventNative
+public unsafe struct DspVectorEventNative
 {
     public int FrameNumber;
     public int VectorIndex;
@@ -166,6 +166,7 @@ public struct DspVectorEventNative
     public int ReliabilityPct;
     public int PeakOffsetIg;
     public int PhasePolarity;
+    public fixed int CodeScoresPct[DspConstants.Rm14Codes];
 }
 
 /// <summary>

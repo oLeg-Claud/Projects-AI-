@@ -46,10 +46,16 @@ public static unsafe class DspNativeMethods
         [
             Path.Combine(baseDir, fileName),
             Path.Combine(baseDir, "runtimes", RuntimeInformation.RuntimeIdentifier, "native", fileName),
-            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "build", fileName)),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "out", "build", "x64-Release", fileName)),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "out", "build", "x64-Debug", fileName)),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "out", "build", fileName)),
             Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "build", "Release", fileName)),
-            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "build", fileName)),
-            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "build", "Release", fileName))
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "build", fileName)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "out", "build", "x64-Release", fileName)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "out", "build", "x64-Debug", fileName)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "out", "build", fileName)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "build", "Release", fileName)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "build", fileName))
         ];
 
         foreach (string path in candidates)
@@ -100,9 +106,18 @@ public static unsafe class DspNativeMethods
         return ptr == nint.Zero ? "UNKNOWN" : Marshal.PtrToStringAnsi(ptr) ?? "UNKNOWN";
     }
 
+    [DllImport(LibraryName, EntryPoint = "dsp_is_running", CallingConvention = CallingConvention.StdCall)]
+    public static extern int IsRunning(nint engine);
+
     [DllImport(LibraryName, EntryPoint = "dsp_probe_legacy_uso", CallingConvention = CallingConvention.StdCall)]
     public static extern DspStatusCode ProbeLegacyUso(
         [MarshalAs(UnmanagedType.LPUTF8Str)] string portName,
+        out int outUsoId);
+
+    [DllImport(LibraryName, EntryPoint = "dsp_scan_legacy_uso", CallingConvention = CallingConvention.StdCall)]
+    public static extern DspStatusCode ScanLegacyUso(
+        byte* outPortBuf,
+        int bufLen,
         out int outUsoId);
 
     [DllImport(LibraryName, EntryPoint = "dsp_parse_legacy_packet", CallingConvention = CallingConvention.StdCall)]

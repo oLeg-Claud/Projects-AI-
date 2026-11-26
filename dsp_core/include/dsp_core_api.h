@@ -117,6 +117,7 @@ typedef struct DspVectorEvent {
     int32_t  reliability_pct;  /* 0..100 */
     int32_t  peak_offset_ig;   /* Best offset inside [-iG, +iG) */
     int32_t  phase_polarity;   /* +1 or -1 */
+    int32_t  code_scores_pct[DSP_RM14_CODES]; /* Signed normalized correlation % (-100..+100) for all 16 RM(1,4) codes */
 } DspVectorEvent;
 
 typedef struct DspFrameData {
@@ -243,12 +244,26 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_get_last_frame(DspEngine* engine, DspFrameD
 DSPCORE_API double DSPCORE_CALL dsp_get_step_h(const DspEngine* engine);
 DSPCORE_API const char* DSPCORE_CALL dsp_get_simd_isa(void);
 
+/** Returns 1 if background acquisition worker is currently active, 0 otherwise. */
+DSPCORE_API int32_t DSPCORE_CALL dsp_is_running(const DspEngine* engine);
+
 /**
- * Probe a serial port using the legacy USO handshake:
- *   TX 0xAA -> RX 0x55 -> TX 0x66 -> RX [0x01, <USO_ID>, ..., 0xFF]
+ * Probe a serial port using the legacy USO32 handshake (TRAEKT2k.cpp N_USO):
+ *   TX 0x10 (stop stream) -> purge -> TX 0xAA -> TX 0x66 -> RX [0x01, <USO_ID>, _, _, 0xFF]
  * Returns DSP_OK and writes *out_uso_id if detected, or negative DspStatusCode.
  */
 DSPCORE_API int32_t DSPCORE_CALL dsp_probe_legacy_uso(const char* port_name, int32_t* out_uso_id);
+
+/**
+ * Automatically enumerate all OS serial ports (Windows SERIALCOMM registry / Linux ttyUSB+ttyACM)
+ * and probe each port until a legacy USO32 responds to 0x66.
+ * Writes the discovered port name (e.g. "COM4" or "/dev/ttyUSB0") into out_port_buf and sets *out_uso_id.
+ */
+DSPCORE_API int32_t DSPCORE_CALL dsp_scan_legacy_uso(
+    char* out_port_buf,
+    int32_t buf_len,
+    int32_t* out_uso_id
+);
 
 /**
  * Utility: Parse one legacy 5-byte (24-bit) or 6-byte (32-bit uco32) USO packet.

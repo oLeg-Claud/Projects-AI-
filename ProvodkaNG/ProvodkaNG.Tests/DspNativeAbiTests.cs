@@ -8,7 +8,7 @@ namespace ProvodkaNG.Tests;
 
 /// <summary>
 /// Verifies exact binary C ABI parity between C# blittable structs and dsp_core_api.h,
-/// plus live P/Invoke round-trip calls into DspCore.dll / libDspCore.so.
+/// FFT SignalAnalyzer accuracy, and live P/Invoke round-trip calls into DspCore.dll / libDspCore.so.
 /// </summary>
 public sealed class DspNativeAbiTests
 {
@@ -18,7 +18,7 @@ public sealed class DspNativeAbiTests
         // Verified against g++ 12 / MSVC x64 natural alignment of dsp_core_api.h
         Assert.Equal(624, sizeof(DspConfigNative));
         Assert.Equal(40, sizeof(DspToolfaceEventNative));
-        Assert.Equal(28, sizeof(DspVectorEventNative));
+        Assert.Equal(92, sizeof(DspVectorEventNative));
         Assert.Equal(576, sizeof(DspFrameDataNative));
         Assert.Equal(24, sizeof(DspSignalBlockNative));
         Assert.Equal(40, sizeof(DspCallbacksNative));
@@ -32,12 +32,32 @@ public sealed class DspNativeAbiTests
 
         Assert.Equal(32, (int)Marshal.OffsetOf<DspToolfaceEventNative>(nameof(DspToolfaceEventNative.LatencyMs)));
         Assert.Equal(16, (int)Marshal.OffsetOf<DspVectorEventNative>(nameof(DspVectorEventNative.ReliabilityPct)));
+        Assert.Equal(28, (int)Marshal.OffsetOf<DspVectorEventNative>(nameof(DspVectorEventNative.CodeScoresPct)));
 
         Assert.Equal(24, (int)Marshal.OffsetOf<DspFrameDataNative>(nameof(DspFrameDataNative.StepH)));
         Assert.Equal(48, (int)Marshal.OffsetOf<DspFrameDataNative>(nameof(DspFrameDataNative.OtkGravDeg)));
         Assert.Equal(312, (int)Marshal.OffsetOf<DspFrameDataNative>(nameof(DspFrameDataNative.VectorCount)));
         Assert.Equal(316, (int)Marshal.OffsetOf<DspFrameDataNative>(nameof(DspFrameDataNative.Vectors5Bit)));
         Assert.Equal(444, (int)Marshal.OffsetOf<DspFrameDataNative>(nameof(DspFrameDataNative.Reliabilities)));
+    }
+
+    [Fact]
+    public void SignalAnalyzer_StripsDcBiasAndDetects5HzCarrierPeak()
+    {
+        const double fs = 250.0;
+        const double targetHz = 5.0;
+        double[] samples = new double[512];
+        for (int i = 0; i < samples.Length; i++)
+        {
+            // Simulate 32-bit ADC with large DC bias + 5 Hz MWD carrier
+            samples[i] = 50_000_000.0 + 150_000.0 * Math.Sin(2.0 * Math.PI * targetHz * i / fs);
+        }
+
+        SpectrumSnapshot spec = SignalAnalyzer.ComputeSpectrum(samples, fs, 512);
+
+        Assert.Equal(256, spec.FrequenciesHz.Length);
+        Assert.InRange(spec.PeakFrequencyHz, 4.4, 5.6);
+        Assert.True(spec.PeakMagnitudeDb > spec.NoiseFloorDb + 15.0);
     }
 
     [Fact]
@@ -90,5 +110,6 @@ public sealed class DspNativeAbiTests
 
         Assert.Contains(client.SimdIsa, new[] { "AVX2", "SSE2", "SCALAR" });
         Assert.True(client.CurrentStepH > 0.0);
+        Assert.False(client.IsRunning);
     }
 }

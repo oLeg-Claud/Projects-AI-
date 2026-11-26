@@ -50,6 +50,7 @@ public:
     int32_t set_corrector(bool enabled) override;
 
     static int32_t probe_port(const char* port_name, int32_t* out_uso_id);
+    static int32_t scan_ports(char* out_port_buf, int32_t buf_len, int32_t* out_uso_id);
     static int32_t parse_packet(const uint8_t* packet, int32_t len, int32_t bit_mode, int32_t* out_sample);
 
 private:

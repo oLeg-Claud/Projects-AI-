@@ -1,24 +1,89 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:dock="clr-namespace:Dock.Avalonia.Controls;assembly=Dock.Avalonia"
         xmlns:vm="using:ProvodkaNG.Desktop.ViewModels"
-        xmlns:ctrl="using:ProvodkaNG.Desktop.Controls"
         x:Class="ProvodkaNG.Desktop.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
-        Title="ПРОВОДКА NG — Телесистема MWD/LWD (Этап 2)"
-        Width="1440"
-        Height="900"
-        MinWidth="1100"
-        MinHeight="720"
+        Title="ПРОВОДКА NG — Телесистема MWD/LWD (УСО32 Авто • Dock)"
+        Width="1500"
+        Height="920"
+        MinWidth="1120"
+        MinHeight="740"
         Background="{DynamicResource BgCanvasBrush}">
 
-  <Grid RowDefinitions="Auto,*,Auto" Margin="10" RowSpacing="8">
+  <Grid RowDefinitions="Auto,Auto,*,Auto">
 
-    <!-- ==================== TOP COMMAND BAR ==================== -->
-    <Border Grid.Row="0" Classes="panel" Padding="12,8">
+    <!-- ==================== MAIN MENU ==================== -->
+    <Border Grid.Row="0"
+            Background="{DynamicResource BgPanelBrush}"
+            BorderBrush="{DynamicResource BorderSubtleBrush}"
+            BorderThickness="0,0,0,1">
+      <Menu>
+        <MenuItem Header="_Файл">
+          <MenuItem Header="Открыть запись сигнала (.smp)..." Command="{Binding OpenSmpFileCommand}" />
+          <MenuItem Header="Закрыть .smp и вернуться к УСО32"
+                    Command="{Binding CloseSmpAndReturnToUsoCommand}"
+                    IsEnabled="{Binding IsSmpPlayerActive}" />
+          <Separator />
+          <MenuItem Header="Загрузить КИХ-фильтр (KIH*.dat)..." Command="{Binding LoadFirFileCommand}" />
+          <Separator />
+          <MenuItem Header="Выход" Command="{Binding ExitApplicationCommand}" />
+        </MenuItem>
+
+        <MenuItem Header="_УСО32">
+          <MenuItem Header="Переинициализировать и найти УСО32" Command="{Binding ForceReinitUsoCommand}" />
+          <Separator />
+          <MenuItem Header="Усиление (0x90..0x95)">
+            <MenuItem Header="Ступень 0 (0x90)" Command="{Binding SetGainCommand}" CommandParameter="0" />
+            <MenuItem Header="Ступень 1 (0x91)" Command="{Binding SetGainCommand}" CommandParameter="1" />
+            <MenuItem Header="Ступень 2 (0x92)" Command="{Binding SetGainCommand}" CommandParameter="2" />
+            <MenuItem Header="Ступень 3 (0x93)" Command="{Binding SetGainCommand}" CommandParameter="3" />
+            <MenuItem Header="Ступень 4 (0x94)" Command="{Binding SetGainCommand}" CommandParameter="4" />
+            <MenuItem Header="Ступень 5 (0x95)" Command="{Binding SetGainCommand}" CommandParameter="5" />
+          </MenuItem>
+          <MenuItem Header="Частота несущей">
+            <MenuItem Header="16 Гц" Command="{Binding SetCarrierFreqCommand}" CommandParameter="16" />
+            <MenuItem Header="10 Гц" Command="{Binding SetCarrierFreqCommand}" CommandParameter="10" />
+            <MenuItem Header="7 Гц" Command="{Binding SetCarrierFreqCommand}" CommandParameter="7" />
+            <MenuItem Header="5 Гц" Command="{Binding SetCarrierFreqCommand}" CommandParameter="5" />
+            <MenuItem Header="3.6 Гц" Command="{Binding SetCarrierFreqCommand}" CommandParameter="3.6" />
+            <MenuItem Header="2.5 Гц" Command="{Binding SetCarrierFreqCommand}" CommandParameter="2.5" />
+            <MenuItem Header="1.8 Гц" Command="{Binding SetCarrierFreqCommand}" CommandParameter="1.8" />
+          </MenuItem>
+          <MenuItem Header="Кодировка (Ncod)">
+            <MenuItem Header="Кодировка №1 (Ncod = 0)" Command="{Binding SetCodebookCommand}" CommandParameter="0" />
+            <MenuItem Header="Кодировка №2 (Ncod = 1)" Command="{Binding SetCodebookCommand}" CommandParameter="1" />
+          </MenuItem>
+        </MenuItem>
+
+        <MenuItem Header="_Окна">
+          <MenuItem Header="Осциллограф" Command="{Binding ActivatePanelCommand}" CommandParameter="OscilloscopeDoc" />
+          <MenuItem Header="Спектр (БПФ)" Command="{Binding ActivatePanelCommand}" CommandParameter="SpectrumDoc" />
+          <MenuItem Header="Корреляция RM(1,4)" Command="{Binding ActivatePanelCommand}" CommandParameter="CorrelationDoc" />
+          <MenuItem Header="Отклонитель (OTK)" Command="{Binding ActivatePanelCommand}" CommandParameter="ToolfaceTool" />
+          <MenuItem Header="УСО32 и ЦОС" Command="{Binding ActivatePanelCommand}" CommandParameter="UsoControlTool" />
+          <MenuItem Header="Инклинометрия и НДМ" Command="{Binding ActivatePanelCommand}" CommandParameter="InclinometryTool" />
+          <MenuItem Header="Векторы RM(1,4)" Command="{Binding ActivatePanelCommand}" CommandParameter="VectorsTool" />
+          <Separator />
+          <MenuItem Header="Сбросить раскладку окон" Command="{Binding ResetDockLayoutCommand}" />
+        </MenuItem>
+
+        <MenuItem Header="_Вид">
+          <MenuItem Header="Переключить тему (Ночная / Дневная вахта)" Command="{Binding ToggleShiftThemeCommand}" />
+        </MenuItem>
+      </Menu>
+    </Border>
+
+    <!-- ==================== COMPACT LIVE TELEMETRY HEADER (NO MANUAL START BUTTON) ==================== -->
+    <Border Grid.Row="1"
+            Background="{DynamicResource BgPanelBrush}"
+            BorderBrush="{DynamicResource BorderSubtleBrush}"
+            BorderThickness="0,0,0,1"
+            Padding="10,6">
       <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
-        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
           <TextBlock Text="ПРОВОДКА NG"
-                     FontSize="17"
+                     FontSize="15"
                      FontWeight="Black"
                      Foreground="{DynamicResource AccentAmberBrush}"
                      VerticalAlignment="Center" />
@@ -26,7 +91,7 @@
                   BorderBrush="{DynamicResource BorderSubtleBrush}"
                   BorderThickness="1"
                   CornerRadius="3"
-                  Padding="8,3"
+                  Padding="8,2"
                   VerticalAlignment="Center">
             <TextBlock Text="{Binding ModeBadge}"
                        FontSize="11"
@@ -34,377 +99,63 @@
                        FontFamily="Consolas, monospace"
                        Foreground="{DynamicResource AccentCyanBrush}" />
           </Border>
+          <TextBlock Text="{Binding DetectedUsoLabel}"
+                     FontSize="12"
+                     FontFamily="Consolas, monospace"
+                     Foreground="{DynamicResource TextPrimaryBrush}"
+                     VerticalAlignment="Center" />
+        </StackPanel>
+
+        <StackPanel Grid.Column="1"
+                    Orientation="Horizontal"
+                    Spacing="8"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    IsVisible="{Binding IsSmpPlayerActive}">
+          <TextBlock Text="{Binding ActiveSmpFileName, StringFormat='Плеер .smp: {0}'}"
+                     FontSize="12"
+                     FontWeight="SemiBold"
+                     Foreground="{DynamicResource AccentAmberBrush}"
+                     VerticalAlignment="Center" />
+          <Button Content="Вернуться к УСО32"
+                  Command="{Binding CloseSmpAndReturnToUsoCommand}"
+                  Padding="10,3" />
+        </StackPanel>
+
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
           <TextBlock Text="{Binding SimdIsa, StringFormat='SIMD: {0}'}"
                      FontSize="11"
                      FontFamily="Consolas, monospace"
                      Foreground="{DynamicResource TextSecondaryBrush}"
                      VerticalAlignment="Center" />
-        </StackPanel>
-
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" HorizontalAlignment="Center">
-          <ComboBox ItemsSource="{Binding SourceOptions}"
-                    SelectedItem="{Binding SelectedSource}"
-                    MinWidth="205">
-            <ComboBox.ItemTemplate>
-              <DataTemplate x:DataType="vm:SourceOption">
-                <TextBlock Text="{Binding DisplayName}" />
-              </DataTemplate>
-            </ComboBox.ItemTemplate>
-          </ComboBox>
-
-          <ComboBox ItemsSource="{Binding FormatOptions}"
-                    SelectedItem="{Binding SelectedFormat}"
-                    MinWidth="225">
-            <ComboBox.ItemTemplate>
-              <DataTemplate x:DataType="vm:FormatOption">
-                <TextBlock Text="{Binding DisplayName}" />
-              </DataTemplate>
-            </ComboBox.ItemTemplate>
-          </ComboBox>
-
-          <Button Command="{Binding ToggleAcquisitionCommand}"
-                  Padding="18,6"
-                  FontWeight="Bold">
-            <Panel>
-              <TextBlock Text="ПУСК ЦОС" IsVisible="{Binding !IsRunning}" />
-              <TextBlock Text="СТОП ЦОС" IsVisible="{Binding IsRunning}" />
-            </Panel>
-          </Button>
-        </StackPanel>
-
-        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
           <Button Content="{Binding ThemeButtonText}"
                   Command="{Binding ToggleShiftThemeCommand}"
-                  Padding="10,6" />
+                  Padding="10,4" />
         </StackPanel>
       </Grid>
     </Border>
 
-    <!-- ==================== MAIN DOCKABLE WORKSPACE ==================== -->
-    <Grid Grid.Row="1" ColumnDefinitions="310,*,340" ColumnSpacing="8">
-
-      <!-- LEFT COLUMN: USO & DSP HARDWARE CONTROL -->
-      <Border Grid.Column="0" Classes="panel">
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
-          <StackPanel Spacing="10">
-            <TextBlock Text="ИСТОЧНИК СИГНАЛА И УСО" Classes="section-title" />
-
-            <StackPanel Spacing="4">
-              <TextBlock Text="COM-порт / файл записи (.smp)" Classes="kpi-label" />
-              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                <TextBox Grid.Column="0" Text="{Binding PortOrPath}" />
-                <Button Grid.Column="1" Content="..." Click="OnBrowseSmpClick" Padding="10,5" />
-              </Grid>
-            </StackPanel>
-
-            <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
-              <Button Grid.Column="0"
-                      Content="Поиск УСО (0x66)"
-                      Command="{Binding ProbeLegacyUsoCommand}"
-                      HorizontalAlignment="Stretch" />
-              <ComboBox Grid.Column="1"
-                        ItemsSource="{Binding SpeedOptions}"
-                        SelectedItem="{Binding SelectedSpeed}"
-                        HorizontalAlignment="Stretch">
-                <ComboBox.ItemTemplate>
-                  <DataTemplate x:DataType="vm:SpeedOption">
-                    <TextBlock Text="{Binding DisplayName}" />
-                  </DataTemplate>
-                </ComboBox.ItemTemplate>
-              </ComboBox>
-            </Grid>
-
-            <TextBlock Text="{Binding UsoProbeStatus}"
-                       FontSize="11"
-                       TextWrapping="Wrap"
-                       Foreground="{DynamicResource TextSecondaryBrush}" />
-
-            <Separator Background="{DynamicResource BorderSubtleBrush}" Margin="0,2" />
-            <TextBlock Text="ПАРАМЕТРЫ ЦОС (DspCore)" Classes="section-title" />
-
-            <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
-              <StackPanel Grid.Column="0" Spacing="3">
-                <TextBlock Text="Разрядность УСО" Classes="kpi-label" />
-                <ComboBox ItemsSource="{Binding BitModes}"
-                          SelectedItem="{Binding UsoBitMode}"
-                          HorizontalAlignment="Stretch" />
-              </StackPanel>
-              <StackPanel Grid.Column="1" Spacing="3">
-                <TextBlock Text="Усиление (0..5)" Classes="kpi-label" />
-                <ComboBox ItemsSource="{Binding GainIndices}"
-                          SelectedItem="{Binding GainIndex}"
-                          HorizontalAlignment="Stretch" />
-              </StackPanel>
-            </Grid>
-
-            <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
-              <StackPanel Grid.Column="0" Spacing="3">
-                <TextBlock Text="Частота несущей, Гц" Classes="kpi-label" />
-                <ComboBox ItemsSource="{Binding CarrierFrequencies}"
-                          SelectedItem="{Binding CarrierFreqHz}"
-                          HorizontalAlignment="Stretch" />
-              </StackPanel>
-              <StackPanel Grid.Column="1" Spacing="3">
-                <TextBlock Text="Таблица кодов Ncod" Classes="kpi-label" />
-                <ComboBox ItemsSource="{Binding Codebooks}"
-                          SelectedItem="{Binding Ncod}"
-                          HorizontalAlignment="Stretch" />
-              </StackPanel>
-            </Grid>
-
-            <StackPanel Spacing="4">
-              <TextBlock Text="КИХ-фильтр (KIH*.dat)" Classes="kpi-label" />
-              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                <TextBox Grid.Column="0" Text="{Binding FirFilePath}" Watermark="Без фильтра (bypass)" />
-                <Button Grid.Column="1" Content="..." Click="OnBrowseFirClick" Padding="10,5" />
-              </Grid>
-            </StackPanel>
-
-            <StackPanel Spacing="4">
-              <Grid ColumnDefinitions="*,Auto">
-                <TextBlock Grid.Column="0" Text="Порог ДСП (достоверность)" Classes="kpi-label" />
-                <TextBlock Grid.Column="1"
-                           Text="{Binding DcpThreshold, StringFormat='{}{0}%'}"
-                           FontFamily="Consolas, monospace"
-                           FontSize="12"
-                           Foreground="{DynamicResource AccentAmberBrush}" />
-              </Grid>
-              <Slider Minimum="20" Maximum="95" Value="{Binding DcpThreshold}" />
-            </StackPanel>
-
-            <CheckBox Content="Корректор УСО (0x71 вкл / 0x72 выкл)" IsChecked="{Binding CorrectorEnabled}" />
-            <CheckBox Content="Автоподстройка шага H (PIK5 / ID)" IsChecked="{Binding EnableStepTrack}" />
-
-            <Separator Background="{DynamicResource BorderSubtleBrush}" Margin="0,2" />
-            <TextBlock Text="СИНХРОНИЗАЦИЯ И ДРЕЙФ" Classes="section-title" />
-
-            <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="6">
-              <Border Grid.Row="0" Grid.Column="0" Classes="kpi-card">
-                <StackPanel>
-                  <TextBlock Text="КАДР #" Classes="kpi-label" />
-                  <TextBlock Text="{Binding FrameNumber}" FontSize="16" FontWeight="Bold" FontFamily="Consolas, monospace" />
-                </StackPanel>
-              </Border>
-              <Border Grid.Row="0" Grid.Column="1" Classes="kpi-card">
-                <StackPanel>
-                  <TextBlock Text="КОРРЕЛЯЦИЯ СП" Classes="kpi-label" />
-                  <TextBlock Text="{Binding SyncCorrPct, StringFormat='{}{0}%'}" FontSize="16" FontWeight="Bold" FontFamily="Consolas, monospace" />
-                </StackPanel>
-              </Border>
-              <Border Grid.Row="1" Grid.Column="0" Classes="kpi-card">
-                <StackPanel>
-                  <TextBlock Text="ШАГ H (PIK5)" Classes="kpi-label" />
-                  <TextBlock Text="{Binding StepH, StringFormat='{}{0:0.00000}'}" FontSize="14" FontWeight="Bold" FontFamily="Consolas, monospace" />
-                </StackPanel>
-              </Border>
-              <Border Grid.Row="1" Grid.Column="1" Classes="kpi-card">
-                <StackPanel>
-                  <TextBlock Text="ДРЕЙФ / CRC32" Classes="kpi-label" />
-                  <TextBlock Text="{Binding CrcBadge}" FontSize="13" FontWeight="Bold" FontFamily="Consolas, monospace" />
-                </StackPanel>
-              </Border>
-            </Grid>
-          </StackPanel>
-        </ScrollViewer>
-      </Border>
-
-      <!-- CENTER COLUMN: TABS (DRILLER MONITOR / OSCILLOSCOPE / STAGE 3-4 PLACEHOLDERS) -->
-      <TabControl Grid.Column="1">
-        <TabItem Header="Монитор бурильщика и ЦОС">
-          <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8" Margin="0,8,0,0">
-
-            <!-- Primary Inclinometry & Service KPI Strip -->
-            <UniformGrid Grid.Row="0" Columns="4" Rows="2">
-              <Border Classes="kpi-card" Margin="0,0,6,6">
-                <StackPanel>
-                  <TextBlock Text="ЗЕНИТНЫЙ УГОЛ (ЗУ)" Classes="kpi-label" />
-                  <TextBlock Text="{Binding ZuDeg, StringFormat='{}{0:0.00}°'}" Classes="kpi-value" Foreground="{DynamicResource AccentAmberBrush}" />
-                </StackPanel>
-              </Border>
-              <Border Classes="kpi-card" Margin="0,0,6,6">
-                <StackPanel>
-                  <TextBlock Text="АЗИМУТ ИСТИННЫЙ" Classes="kpi-label" />
-                  <TextBlock Text="{Binding AzimuthDeg, StringFormat='{}{0:0.00}°'}" Classes="kpi-value" Foreground="{DynamicResource AccentCyanBrush}" />
-                </StackPanel>
-              </Border>
-              <Border Classes="kpi-card" Margin="0,0,6,6">
-                <StackPanel>
-                  <TextBlock Text="ГАММА-КАРОТАЖ (ГК)" Classes="kpi-label" />
-                  <TextBlock Text="{Binding GkZts, StringFormat='{}{0:0.0}'}" Classes="kpi-value" />
-                </StackPanel>
-              </Border>
-              <Border Classes="kpi-card" Margin="0,0,0,6">
-                <StackPanel>
-                  <TextBlock Text="ОБОРОТЫ / ВИБРАЦИЯ" Classes="kpi-label" />
-                  <StackPanel Orientation="Horizontal" Spacing="8">
-                    <TextBlock Text="{Binding RpmZts}" Classes="kpi-value" />
-                    <TextBlock Text="{Binding VibrZts, StringFormat='/ V:{0}'}" FontSize="15" VerticalAlignment="Bottom" Margin="0,0,0,3" Foreground="{DynamicResource TextSecondaryBrush}" />
-                  </StackPanel>
-                </StackPanel>
-              </Border>
-
-              <Border Classes="kpi-card" Margin="0,0,6,0">
-                <StackPanel>
-                  <TextBlock Text="ТЕМПЕРАТУРА ЗТС" Classes="kpi-label" />
-                  <TextBlock Text="{Binding TempZts, StringFormat='{}{0:0.0} °C'}" FontSize="18" FontWeight="Bold" FontFamily="Consolas, monospace" />
-                </StackPanel>
-              </Border>
-              <Border Classes="kpi-card" Margin="0,0,6,0">
-                <StackPanel>
-                  <TextBlock Text="ПИТАНИЕ / БАТАРЕЯ" Classes="kpi-label" />
-                  <StackPanel Orientation="Horizontal" Spacing="6">
-                    <TextBlock Text="{Binding VoltZts, StringFormat='{}{0:0.0} В'}" FontSize="18" FontWeight="Bold" FontFamily="Consolas, monospace" />
-                    <TextBlock Text="{Binding BatteryPct, StringFormat='({0}%)'}" FontSize="13" VerticalAlignment="Bottom" Foreground="{DynamicResource StatusOkBrush}" />
-                  </StackPanel>
-                </StackPanel>
-              </Border>
-              <Border Classes="kpi-card" Margin="0,0,6,0">
-                <StackPanel>
-                  <TextBlock Text="G_ОБЩ / H_ОБЩ" Classes="kpi-label" />
-                  <TextBlock Text="{Binding GTotal, StringFormat='G:{0:0.000}'}" FontSize="15" FontWeight="Bold" FontFamily="Consolas, monospace" />
-                  <TextBlock Text="{Binding HTotal, StringFormat='H:{0:0} нТл'}" FontSize="12" FontFamily="Consolas, monospace" Foreground="{DynamicResource TextSecondaryBrush}" />
-                </StackPanel>
-              </Border>
-              <Border Classes="kpi-card" Margin="0,0,0,0">
-                <StackPanel>
-                  <TextBlock Text="МАГН. НАКЛОНЕНИЕ (DIP)" Classes="kpi-label" />
-                  <TextBlock Text="{Binding DipCalcDeg, StringFormat='{}{0:0.00}°'}" FontSize="18" FontWeight="Bold" FontFamily="Consolas, monospace" />
-                </StackPanel>
-              </Border>
-            </UniformGrid>
-
-            <!-- Live Dual-Trace Oscilloscope -->
-            <Border Grid.Row="1" Classes="panel" Padding="8">
-              <Grid RowDefinitions="Auto,*" RowSpacing="6">
-                <TextBlock Grid.Row="0" Text="ОСЦИЛЛОГРАФ ВХОДНОГО СИГНАЛА (RAW АЦП / КИХ-ФИЛЬТР)" Classes="section-title" />
-                <ctrl:OscilloscopeControl Grid.Row="1"
-                                          RawSamples="{Binding OscRawSamples}"
-                                          FilteredSamples="{Binding OscFilteredSamples}"
-                                          OverflowFlag="{Binding AdcOverflowFlag}"
-                                          IsDarkTheme="{Binding IsDarkTheme}" />
-              </Grid>
-            </Border>
-
-            <!-- Live 5-bit Vector Reliability Strip + Conditional NDM Bar -->
-            <StackPanel Grid.Row="2" Spacing="8">
-              <Border Classes="panel" Padding="10,8" IsVisible="{Binding IsNdmVisible}">
-                <StackPanel Spacing="6">
-                  <TextBlock Text="НАДДОЛОТНЫЙ МОДУЛЬ (НДМ — ФОРМАТ №2)" Classes="section-title" />
-                  <UniformGrid Columns="6">
-                    <TextBlock Text="{Binding ZuNdmDeg, StringFormat='ЗУ НДМ: {0:0.00}°'}" FontFamily="Consolas, monospace" />
-                    <TextBlock Text="{Binding GkUpNdm, StringFormat='ГК верх: {0:0.0}'}" FontFamily="Consolas, monospace" />
-                    <TextBlock Text="{Binding GkDnNdm, StringFormat='ГК низ: {0:0.0}'}" FontFamily="Consolas, monospace" />
-                    <TextBlock Text="{Binding WobNdm, StringFormat='WOB: {0:0.0} т'}" FontFamily="Consolas, monospace" />
-                    <TextBlock Text="{Binding TorqueNdm, StringFormat='Момент: {0:0.0}'}" FontFamily="Consolas, monospace" />
-                    <TextBlock Text="{Binding PressNdm, StringFormat='Давл.: {0:0.0}'}" FontFamily="Consolas, monospace" />
-                  </UniformGrid>
-                </StackPanel>
-              </Border>
-
-              <Border Classes="panel" Padding="10,8">
-                <StackPanel Spacing="6">
-                  <TextBlock Text="ПОВЕКТОРНЫЙ ПРИЁМ RM(1,4) — 5-БИТНЫЕ КОДЫ И ДОСТОВЕРНОСТЬ" Classes="section-title" />
-                  <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-                    <ItemsControl ItemsSource="{Binding DecodedVectors}">
-                      <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate>
-                          <StackPanel Orientation="Horizontal" Spacing="4" />
-                        </ItemsPanelTemplate>
-                      </ItemsControl.ItemsPanel>
-                      <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="vm:VectorCellViewModel">
-                          <Border Background="{DynamicResource BgCardBrush}"
-                                  BorderBrush="{Binding StatusBrush}"
-                                  BorderThickness="1"
-                                  CornerRadius="3"
-                                  Padding="6,3">
-                            <StackPanel HorizontalAlignment="Center">
-                              <TextBlock Text="{Binding Index, StringFormat='V{0}'}" FontSize="9" Foreground="{DynamicResource TextSecondaryBrush}" HorizontalAlignment="Center" />
-                              <TextBlock Text="{Binding CodeHex}" FontSize="12" FontWeight="Bold" FontFamily="Consolas, monospace" HorizontalAlignment="Center" />
-                              <TextBlock Text="{Binding ReliabilityPct, StringFormat='{}{0}%'}" FontSize="9" Foreground="{Binding StatusBrush}" HorizontalAlignment="Center" />
-                            </StackPanel>
-                          </Border>
-                        </DataTemplate>
-                      </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                  </ScrollViewer>
-                </StackPanel>
-              </Border>
-            </StackPanel>
-          </Grid>
-        </TabItem>
-
-        <TabItem Header="Инклинометрия и 3D (Этап 3)">
-          <Border Classes="panel" Margin="0,8,0,0">
-            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
-              <TextBlock Text="Редактор замеров (.ink / .bkp) и расчёт траектории Minimum Curvature" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" />
-              <TextBlock Text="Подключается на Этапе 3 к событиям FrameCompleted из ProvodkaNG.Core." Foreground="{DynamicResource TextSecondaryBrush}" HorizontalAlignment="Center" />
-            </StackPanel>
-          </Border>
-        </TabItem>
-
-        <TabItem Header="WITS / ГТИ / Экспорт (Этап 4)">
-          <Border Classes="panel" Margin="0,8,0,0">
-            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
-              <TextBlock Text="Шлюз WITS Level 0, IDepthProvider, Пульт Бурильщика, LAS 2.0 / Baker / SUCOP / WITSML" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" />
-              <TextBlock Text="Подключается на Этапе 4 поверх единой шины телеметрии ProvodkaNG.Core." Foreground="{DynamicResource TextSecondaryBrush}" HorizontalAlignment="Center" />
-            </StackPanel>
-          </Border>
-        </TabItem>
-      </TabControl>
-
-      <!-- RIGHT COLUMN: ZERO-LATENCY TOOLFACE (OTK) COCKPIT -->
-      <Border Grid.Column="2" Classes="panel">
-        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="10">
-          <StackPanel Grid.Row="0" Spacing="2">
-            <TextBlock Text="ОТКЛОНИТЕЛЬ (ZERO-LATENCY)" Classes="section-title" />
-            <TextBlock Text="Прямой коллбэк DspOnToolfaceCallback" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" />
-          </StackPanel>
-
-          <ctrl:ToolfaceDialControl Grid.Row="1"
-                                    MinHeight="280"
-                                    AngleDeg="{Binding ToolfaceAngleDeg}"
-                                    ReliabilityPct="{Binding ToolfaceReliabilityPct}"
-                                    LatencyMs="{Binding ToolfaceLatencyMs}"
-                                    Channel="{Binding ToolfaceChannel}"
-                                    HistoryAngles="{Binding ToolfaceHistory}"
-                                    IsDarkTheme="{Binding IsDarkTheme}" />
-
-          <Grid Grid.Row="2" ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="6">
-            <Border Grid.Row="0" Grid.Column="0" Classes="kpi-card">
-              <StackPanel>
-                <TextBlock Text="ОБНОВЛЕНИЙ ОТК" Classes="kpi-label" />
-                <TextBlock Text="{Binding ToolfaceUpdatesCount}" FontSize="18" FontWeight="Bold" FontFamily="Consolas, monospace" />
-              </StackPanel>
-            </Border>
-            <Border Grid.Row="0" Grid.Column="1" Classes="kpi-card">
-              <StackPanel>
-                <TextBlock Text="ЗАДЕРЖКА ЦОС" Classes="kpi-label" />
-                <TextBlock Text="{Binding ToolfaceLatencyMs, StringFormat='{}{0:0.00} мс'}" FontSize="18" FontWeight="Bold" FontFamily="Consolas, monospace" Foreground="{DynamicResource StatusOkBrush}" />
-              </StackPanel>
-            </Border>
-            <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Classes="kpi-card">
-              <StackPanel>
-                <TextBlock Text="ДРЕЙФ ПИКА СП (ID)" Classes="kpi-label" />
-                <TextBlock Text="{Binding LastPikDrift, StringFormat='{}{0:+#;-#;0} отсч.'}" FontSize="15" FontWeight="Bold" FontFamily="Consolas, monospace" />
-              </StackPanel>
-            </Border>
-          </Grid>
-        </Grid>
-      </Border>
-    </Grid>
+    <!-- ==================== AVALONIA DOCK MANAGER WORKSPACE ==================== -->
+    <dock:DockControl Grid.Row="2"
+                      Layout="{Binding Layout}"
+                      Margin="4" />
 
     <!-- ==================== BOTTOM STATUS BAR ==================== -->
-    <Border Grid.Row="2" Classes="panel" Padding="10,6">
+    <Border Grid.Row="3"
+            Background="{DynamicResource BgPanelBrush}"
+            BorderBrush="{DynamicResource BorderSubtleBrush}"
+            BorderThickness="0,1,0,0"
+            Padding="10,5">
       <Grid ColumnDefinitions="*,Auto">
         <TextBlock Grid.Column="0"
                    Text="{Binding StatusBanner}"
-                   FontSize="12"
+                   FontSize="11.5"
                    FontFamily="Consolas, monospace"
                    Foreground="{DynamicResource TextPrimaryBrush}" />
         <TextBlock Grid.Column="1"
-                   Text="Этап 2 • .NET 8 + Avalonia UI 11 + P/Invoke DspCore"
+                   Text="{Binding TotalSamplesReceived, StringFormat='Отсчётов: {0}  •  УСО32 Авто + Dock Manager'}"
                    FontSize="11"
+                   FontFamily="Consolas, monospace"
                    Foreground="{DynamicResource TextSecondaryBrush}" />
       </Grid>
     </Border>

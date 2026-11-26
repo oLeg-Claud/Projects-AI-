@@ -370,22 +370,41 @@ void test_geomash_crc32_format30() {
 
 /* Test 7: Real legacy .smp binary recording playback via SmpFilePlayerSource + C ABI */
 void test_real_smp_file_player() {
+    const char* candidates[] = {
+        "C:\\Projects\\AI\\TelesystemAiStudio\\dsp_core\\out\\build\\26-06-26 09-23-41.smp",
+        "../tek/smp/26-06-26 15-44-56.smp",
+        "tek/smp/26-06-26 15-44-56.smp"
+    };
+    const char* smp_path = nullptr;
+    for (const char* p : candidates) {
+        if (FILE* f = std::fopen(p, "rb")) {
+            std::fclose(f);
+            smp_path = p;
+            break;
+        }
+    }
+    CHECK(smp_path != nullptr);
+
     DspConfig cfg{};
     dsp_config_default(&cfg);
     cfg.source_type    = DSP_SRC_FILE_PLAYER;
     cfg.uso_bit_mode   = 32;
     cfg.playback_speed = 0;
-    std::snprintf(cfg.port_or_path, sizeof(cfg.port_or_path), "%s", "C:\\Projects\\AI\\TelesystemAiStudio\\dsp_core\\out\\build\\26-06-26 09-23-41.smp");
+    std::snprintf(cfg.port_or_path, sizeof(cfg.port_or_path), "%s", smp_path);
 
     struct SmpStats {
         int64_t total_samples = 0;
         int     blocks = 0;
+        double  first_sample = 0.0;
     } st;
 
     DspCallbacks cbs{};
     cbs.user_data = &st;
     cbs.on_signal = [](const DspSignalBlock* blk, void* ud) {
         auto* s = static_cast<SmpStats*>(ud);
+        if (s->blocks == 0 && blk->sample_count > 0 && blk->raw_samples) {
+            s->first_sample = blk->raw_samples[0];
+        }
         s->total_samples += blk->sample_count;
         s->blocks++;
     };
@@ -394,17 +413,20 @@ void test_real_smp_file_player() {
     CHECK(eng != nullptr);
     CHECK(dsp_start(eng) == DSP_OK);
 
-    for (int i = 0; i < 40 && st.total_samples < 5000; ++i) {
+    for (int i = 0; i < 60 && dsp_is_running(eng) != 0; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     dsp_stop(eng);
+    CHECK(dsp_is_running(eng) == 0);
     dsp_destroy(eng);
 
     CHECK(st.blocks > 0);
     CHECK(st.total_samples > 0);
+    /* Verify 2048-byte ASCII "----" header (0x2D2D2D2D = 757935405) was skipped */
+    CHECK(std::fabs(st.first_sample - 757935405.0) > 1.0);
 
     g_tests_passed++;
-    std::printf("[PASS] test_real_smp_file_player (%lld samples streamed from legacy .smp)\n",
+    std::printf("[PASS] test_real_smp_file_player (%lld samples streamed from legacy .smp, header skipped)\n",
                 static_cast<long long>(st.total_samples));
 }
 

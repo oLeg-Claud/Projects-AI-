@@ -1,9 +1,12 @@
 #include "uso_source.hpp"
 #include "dsp_internal.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <thread>
+#include <vector>
 
 #if defined(_WIN32)
   #ifndef NOMINMAX
@@ -87,20 +90,28 @@ intptr_t open_serial_57600_8n1(const char* port_name, int32_t read_timeout_ms) {
 
     COMMTIMEOUTS cto{};
     if (!GetCommTimeouts(h, &cto)) { CloseHandle(h); return -1; }
-    cto.ReadIntervalTimeout         = 0;
+    cto.ReadIntervalTimeout         = 15;
     cto.ReadTotalTimeoutMultiplier  = 0;
     cto.ReadTotalTimeoutConstant    = static_cast<DWORD>(read_timeout_ms);
     cto.WriteTotalTimeoutMultiplier = 0;
-    cto.WriteTotalTimeoutConstant   = 20;
+    cto.WriteTotalTimeoutConstant   = 40;
     if (!SetCommTimeouts(h, &cto)) { CloseHandle(h); return -1; }
 
     DCB dcb{};
     dcb.DCBlength = sizeof(DCB);
     if (!GetCommState(h, &dcb)) { CloseHandle(h); return -1; }
-    dcb.BaudRate = CBR_57600;
-    dcb.ByteSize = 8;
-    dcb.Parity   = NOPARITY;
-    dcb.StopBits = ONESTOPBIT;
+    dcb.BaudRate        = CBR_57600;
+    dcb.ByteSize        = 8;
+    dcb.Parity          = NOPARITY;
+    dcb.StopBits        = ONESTOPBIT;
+    dcb.fBinary         = TRUE;
+    dcb.fParity         = FALSE;
+    dcb.fOutxCtsFlow    = FALSE;
+    dcb.fOutxDsrFlow    = FALSE;
+    dcb.fDtrControl     = DTR_CONTROL_ENABLE;
+    dcb.fRtsControl     = RTS_CONTROL_ENABLE;
+    dcb.fOutX           = FALSE;
+    dcb.fInX            = FALSE;
     if (!SetCommState(h, &dcb)) { CloseHandle(h); return -1; }
 
     PurgeComm(h, PURGE_TXABORT | PURGE_RXABORT | PURGE_TXCLEAR | PURGE_RXCLEAR);
@@ -134,6 +145,16 @@ intptr_t open_serial_57600_8n1(const char* port_name, int32_t read_timeout_ms) {
 #endif
 }
 
+void purge_serial_handle(intptr_t handle) {
+    if (handle < 0) return;
+#if defined(_WIN32)
+    PurgeComm(reinterpret_cast<HANDLE>(handle),
+              PURGE_TXABORT | PURGE_RXABORT | PURGE_TXCLEAR | PURGE_RXCLEAR);
+#else
+    tcflush(static_cast<int>(handle), TCIOFLUSH);
+#endif
+}
+
 void close_serial_handle(intptr_t handle) {
     if (handle < 0) return;
 #if defined(_WIN32)
@@ -152,6 +173,22 @@ bool serial_write_byte(intptr_t handle, uint8_t b) {
     ssize_t w = ::write(static_cast<int>(handle), &b, 1);
     return w == 1;
 #endif
+}
+
+FILE* open_file_utf8_rb(const char* path) {
+    if (!path || path[0] == '\0') return nullptr;
+#if defined(_WIN32)
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
+    if (wlen > 0) {
+        std::wstring wpath(static_cast<size_t>(wlen), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, path, -1, &wpath[0], wlen);
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, wpath.c_str(), L"rb") == 0 && f != nullptr) {
+            return f;
+        }
+    }
+#endif
+    return std::fopen(path, "rb");
 }
 
 int32_t serial_read_bytes(intptr_t handle, uint8_t* dst, int32_t len, int32_t timeout_ms) {
@@ -211,20 +248,31 @@ int32_t LegacySerialUsoSource::probe_port(const char* port_name, int32_t* out_us
     if (!port_name || !out_uso_id) return DSP_ERR_INVALID_ARG;
     *out_uso_id = 0;
 
-    intptr_t h = open_serial_57600_8n1(port_name, 50);
+    intptr_t h = open_serial_57600_8n1(port_name, 70);
     if (h < 0) return DSP_ERR_PORT_OPEN;
 
     int32_t status = DSP_ERR_NOT_FOUND;
+
+    /* 1. Stop any active ADC streaming so 0x66 response isn't buried in ADC bytes */
+    serial_write_byte(h, 0x10);
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    purge_serial_handle(h);
+
+    /* 2. Match legacy TRAEKT2k.cpp N_USO (lines 2695-2710):
+     *    Send 0xAA, optionally consume 1 byte, and ALWAYS proceed to 0x66 even if 0x55 is absent */
     if (serial_write_byte(h, 0xAA)) {
         uint8_t ack = 0;
-        if (serial_read_bytes(h, &ack, 1, 50) == 1 && ack == 0x55) {
-            if (serial_write_byte(h, 0x66)) {
-                uint8_t info[5]{};
-                if (serial_read_bytes(h, info, 5, 80) == 5 &&
-                    info[0] == 0x01 && info[4] == 0xFF) {
-                    *out_uso_id = static_cast<int32_t>(info[1]);
-                    status = DSP_OK;
-                }
+        (void)serial_read_bytes(h, &ack, 1, 35);
+    }
+
+    if (serial_write_byte(h, 0x66)) {
+        uint8_t info[16]{};
+        int32_t got = serial_read_bytes(h, info, 16, 100);
+        for (int32_t i = 0; i + 4 < got; ++i) {
+            if (info[i] == 0x01 && info[i + 4] == 0xFF) {
+                *out_uso_id = static_cast<int32_t>(info[i + 1]);
+                status = DSP_OK;
+                break;
             }
         }
     }
@@ -233,16 +281,87 @@ int32_t LegacySerialUsoSource::probe_port(const char* port_name, int32_t* out_us
     return status;
 }
 
+int32_t LegacySerialUsoSource::scan_ports(char* out_port_buf, int32_t buf_len, int32_t* out_uso_id) {
+    if (!out_port_buf || buf_len <= 1 || !out_uso_id) return DSP_ERR_INVALID_ARG;
+    out_port_buf[0] = '\0';
+    *out_uso_id = 0;
+
+    std::vector<std::string> ports;
+
+#if defined(_WIN32)
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DEVICEMAP\\SERIALCOMM", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        char val_name[256]{};
+        char val_data[256]{};
+        for (DWORD idx = 0; ; ++idx) {
+            DWORD name_len = static_cast<DWORD>(sizeof(val_name));
+            DWORD data_len = static_cast<DWORD>(sizeof(val_data) - 1);
+            DWORD val_type = 0;
+            LONG rc = RegEnumValueA(
+                hKey, idx, val_name, &name_len, nullptr, &val_type,
+                reinterpret_cast<LPBYTE>(val_data), &data_len
+            );
+            if (rc == ERROR_NO_MORE_ITEMS) break;
+            if (rc == ERROR_SUCCESS && val_type == REG_SZ && data_len > 0) {
+                val_data[data_len] = '\0';
+                ports.emplace_back(val_data);
+            }
+        }
+        RegCloseKey(hKey);
+    }
+
+    /* Sort COM ports numerically (COM1, COM2, ..., COM10) */
+    std::sort(ports.begin(), ports.end(), [](const std::string& a, const std::string& b) {
+        auto parse_com = [](const std::string& s) -> int {
+            if (s.size() > 3 && (s[0] == 'C' || s[0] == 'c') && (s[1] == 'O' || s[1] == 'o') && (s[2] == 'M' || s[2] == 'm')) {
+                return std::atoi(s.c_str() + 3);
+            }
+            return 9999;
+        };
+        int na = parse_com(a);
+        int nb = parse_com(b);
+        return (na != nb) ? (na < nb) : (a < b);
+    });
+#else
+    const char* prefixes[] = { "/dev/ttyUSB", "/dev/ttyACM" };
+    for (const char* pfx : prefixes) {
+        for (int i = 0; i < 16; ++i) {
+            std::string candidate = std::string(pfx) + std::to_string(i);
+            if (::access(candidate.c_str(), R_OK | W_OK) == 0) {
+                ports.push_back(candidate);
+            }
+        }
+    }
+#endif
+
+    for (const auto& port : ports) {
+        int32_t id = 0;
+        if (probe_port(port.c_str(), &id) == DSP_OK) {
+            std::snprintf(out_port_buf, static_cast<size_t>(buf_len), "%s", port.c_str());
+            *out_uso_id = id;
+            return DSP_OK;
+        }
+    }
+
+    return DSP_ERR_NOT_FOUND;
+}
+
 int32_t LegacySerialUsoSource::open(const DspConfig& cfg) {
     close();
+    /* Always operate in USO32 (uco32) 6-byte packet mode: [0x00, B1, B2, B3, B4, 0xFF/0xFE] */
     bit_mode_   = (cfg.uso_bit_mode == 24) ? 24 : 32;
     gain_index_ = cfg.gain_index;
     synced_     = false;
 
-    handle_ = open_serial_57600_8n1(cfg.port_or_path, 1000);
+    handle_ = open_serial_57600_8n1(cfg.port_or_path, 60);
     if (handle_ < 0) return DSP_ERR_PORT_OPEN;
 
-    /* Hardware initialization sequence from YCO8_1.cpp lines 70-98 */
+    /* Stop any stale stream and flush buffers before hardware initialization */
+    write_byte(0x10);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    purge_serial_handle(handle_);
+
+    /* Hardware initialization sequence matching YCO8_1.cpp lines 70-98 (uco32) */
     const uint8_t gain_cmd = legacy_gain_command_byte(cfg.gain_index, bit_mode_);
     const uint8_t freq_cmd = legacy_freq_command_byte(cfg.carrier_freq_hz);
     const uint8_t corr_cmd = cfg.corrector_enabled ? 0x71 : 0x72;
@@ -250,7 +369,7 @@ int32_t LegacySerialUsoSource::open(const DspConfig& cfg) {
     if (!write_byte(gain_cmd)) { close(); return DSP_ERR_PORT_OPEN; }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     if (!write_byte(freq_cmd)) { close(); return DSP_ERR_PORT_OPEN; }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     if (!write_byte(corr_cmd)) { close(); return DSP_ERR_PORT_OPEN; }
 
     return DSP_OK;
@@ -275,21 +394,26 @@ bool LegacySerialUsoSource::write_byte(uint8_t b) {
 }
 
 int32_t LegacySerialUsoSource::read_exact(uint8_t* buf, int32_t len) {
-    return serial_read_bytes(handle_, buf, len, 200);
+    return serial_read_bytes(handle_, buf, len, 80);
 }
 
 bool LegacySerialUsoSource::resync_stream() {
     const int32_t payload_bytes = (bit_mode_ == 32) ? 4 : 3;
     uint8_t prev = 0;
     uint8_t cur  = 0;
-    for (int tries = 0; tries < 32; ++tries) {
+    for (int tries = 0; tries < 48; ++tries) {
         if (read_exact(&cur, 1) != 1) return false;
         if ((prev == 0xFF || prev == 0xFE) && cur == 0x00) {
             uint8_t discard[8]{};
-            /* Consume remaining bytes of this packet so the next packet starts cleanly at 0x00 */
+            /* Consume remaining payload + trailer and verify packet framing boundary */
             if (read_exact(discard, payload_bytes + 1) == payload_bytes + 1) {
-                synced_ = true;
-                return true;
+                const uint8_t trailer = discard[payload_bytes];
+                if (trailer == 0xFF || trailer == 0xFE) {
+                    synced_ = true;
+                    return true;
+                }
+                prev = trailer;
+                continue;
             }
             return false;
         }
@@ -429,8 +553,20 @@ SmpFilePlayerSource::~SmpFilePlayerSource() {
 int32_t SmpFilePlayerSource::open(const DspConfig& cfg) {
     close();
     if (cfg.port_or_path[0] == '\0') return DSP_ERR_INVALID_ARG;
-    file_ = std::fopen(cfg.port_or_path, "rb");
+    file_ = open_file_utf8_rb(cfg.port_or_path);
     if (!file_) return DSP_ERR_FILE_OPEN;
+
+    /* Legacy PROWODKA .smp recordings begin with a 2048-byte text passport header ("----...")
+     * (Player.h lines 20-21). Skip it automatically while staying compatible with raw headerless files. */
+    char magic[4]{};
+    if (std::fread(magic, 1, 4, file_) == 4 && std::memcmp(magic, "----", 4) == 0) {
+        if (std::fseek(file_, 2048, SEEK_SET) != 0) {
+            std::fseek(file_, 0, SEEK_SET);
+        }
+    } else {
+        std::fseek(file_, 0, SEEK_SET);
+    }
+
     bit_mode_       = (cfg.uso_bit_mode == 24) ? 24 : 32;
     playback_speed_ = cfg.playback_speed;
     sample_rate_hz_ = (cfg.sample_rate_hz > 1.0) ? cfg.sample_rate_hz : 250.0;

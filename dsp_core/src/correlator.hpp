@@ -21,6 +21,7 @@ struct VectorDecodeResult {
     int32_t reliability_pct; /* 0..100 */
     int32_t peak_offset_ig;  /* Fine timing adjustment in [-iG, +iG) */
     double  peak_corr;       /* Signed normalized correlation */
+    int32_t code_scores_pct[DSP_RM14_CODES]; /* Signed normalized correlation % (-100..+100) for all 16 codes */
 };
 
 /**

@@ -1,9 +1,341 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:dp="using:ProvodkaNG.Desktop.Docking"
+             xmlns:vm="using:ProvodkaNG.Desktop.ViewModels"
+             xmlns:ctrl="using:ProvodkaNG.Desktop.Controls"
              x:Class="ProvodkaNG.Desktop.App"
              RequestedThemeVariant="Dark">
+
   <Application.Styles>
     <FluentTheme />
+    <DockFluentTheme />
     <StyleInclude Source="avares://ProvodkaNG.Desktop/Themes/ShiftThemes.axaml" />
   </Application.Styles>
+
+  <!-- Global DataTemplates so docked AND floating Dock Manager windows resolve cleanly -->
+  <Application.DataTemplates>
+
+    <!-- 1. Левая панель: УСО32 и параметры ЦОС -->
+    <DataTemplate x:DataType="dp:UsoControlTool">
+      <ScrollViewer VerticalScrollBarVisibility="Auto" Background="{DynamicResource BgPanelBrush}">
+        <StackPanel Spacing="10" Margin="10">
+          <TextBlock Text="УСО32 (uco32 • 57600 8N1 • АВТО)" Classes="section-title" />
+
+          <Border Classes="kpi-card">
+            <StackPanel Spacing="3">
+              <TextBlock Text="СТАТУС ОБОРУДОВАНИЯ" Classes="kpi-label" />
+              <TextBlock Text="{Binding Main.DetectedUsoLabel}"
+                         FontSize="13"
+                         FontWeight="Bold"
+                         FontFamily="Consolas, monospace"
+                         Foreground="{DynamicResource AccentCyanBrush}"
+                         TextWrapping="Wrap" />
+              <TextBlock Text="{Binding Main.ReinitCount, StringFormat='Переинициализаций: {0}'}"
+                         FontSize="11"
+                         Foreground="{DynamicResource TextSecondaryBrush}" />
+            </StackPanel>
+          </Border>
+
+          <Button Content="Переинициализировать УСО32"
+                  Command="{Binding Main.ForceReinitUsoCommand}"
+                  HorizontalAlignment="Stretch" />
+
+          <Separator Background="{DynamicResource BorderSubtleBrush}" Margin="0,2" />
+          <TextBlock Text="ПЛЕЕР ЗАПИСЕЙ (.SMP)" Classes="section-title" />
+
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+            <Button Grid.Column="0"
+                    Content="Открыть .smp..."
+                    Command="{Binding Main.OpenSmpFileCommand}"
+                    HorizontalAlignment="Stretch" />
+            <ComboBox Grid.Column="1"
+                      ItemsSource="{Binding Main.SpeedOptions}"
+                      SelectedItem="{Binding Main.SelectedSpeed}"
+                      MinWidth="88">
+              <ComboBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:SpeedOption">
+                  <TextBlock Text="{Binding DisplayName}" />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+          </Grid>
+
+          <Button Content="Закрыть .smp → Вернуться к УСО32"
+                  Command="{Binding Main.CloseSmpAndReturnToUsoCommand}"
+                  IsVisible="{Binding Main.IsSmpPlayerActive}"
+                  HorizontalAlignment="Stretch" />
+
+          <Separator Background="{DynamicResource BorderSubtleBrush}" Margin="0,2" />
+          <TextBlock Text="ПАРАМЕТРЫ ЦОС (DspCore)" Classes="section-title" />
+
+          <StackPanel Spacing="3">
+            <TextBlock Text="Формат кадра" Classes="kpi-label" />
+            <ComboBox ItemsSource="{Binding Main.FormatOptions}"
+                      SelectedItem="{Binding Main.SelectedFormat}"
+                      HorizontalAlignment="Stretch">
+              <ComboBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:FormatOption">
+                  <TextBlock Text="{Binding DisplayName}" />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+          </StackPanel>
+
+          <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
+            <StackPanel Grid.Column="0" Spacing="3">
+              <TextBlock Text="Усиление (0x90..0x95)" Classes="kpi-label" />
+              <ComboBox ItemsSource="{Binding Main.GainIndices}"
+                        SelectedItem="{Binding Main.GainIndex}"
+                        HorizontalAlignment="Stretch" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="3">
+              <TextBlock Text="Несущая, Гц" Classes="kpi-label" />
+              <ComboBox ItemsSource="{Binding Main.CarrierFrequencies}"
+                        SelectedItem="{Binding Main.CarrierFreqHz}"
+                        HorizontalAlignment="Stretch" />
+            </StackPanel>
+          </Grid>
+
+          <StackPanel Spacing="3">
+            <TextBlock Text="Кодировка Ncod (0=№1, 1=№2)" Classes="kpi-label" />
+            <ComboBox ItemsSource="{Binding Main.Codebooks}"
+                      SelectedItem="{Binding Main.Ncod}"
+                      HorizontalAlignment="Stretch" />
+          </StackPanel>
+
+          <StackPanel Spacing="4">
+            <TextBlock Text="КИХ-фильтр (KIH*.dat)" Classes="kpi-label" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+              <TextBox Grid.Column="0" Text="{Binding Main.FirFilePath}" Watermark="Без фильтра (bypass)" />
+              <Button Grid.Column="1" Content="..." Command="{Binding Main.LoadFirFileCommand}" Padding="10,5" />
+            </Grid>
+          </StackPanel>
+
+          <StackPanel Spacing="4">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Grid.Column="0" Text="Порог ДСП" Classes="kpi-label" />
+              <TextBlock Grid.Column="1"
+                         Text="{Binding Main.DcpThreshold, StringFormat='{}{0}%'}"
+                         FontFamily="Consolas, monospace"
+                         FontSize="12"
+                         Foreground="{DynamicResource AccentAmberBrush}" />
+            </Grid>
+            <Slider Minimum="20" Maximum="95" Value="{Binding Main.DcpThreshold}" />
+          </StackPanel>
+
+          <CheckBox Content="Корректор УСО32 (0x71 / 0x72)" IsChecked="{Binding Main.CorrectorEnabled}" />
+          <CheckBox Content="Автоподстройка шага H (PIK5 / ID)" IsChecked="{Binding Main.EnableStepTrack}" />
+
+          <Separator Background="{DynamicResource BorderSubtleBrush}" Margin="0,2" />
+          <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="6" RowSpacing="6">
+            <Border Grid.Row="0" Grid.Column="0" Classes="kpi-card">
+              <StackPanel>
+                <TextBlock Text="КАДР #" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.FrameNumber}" FontSize="15" FontWeight="Bold" FontFamily="Consolas, monospace" />
+              </StackPanel>
+            </Border>
+            <Border Grid.Row="0" Grid.Column="1" Classes="kpi-card">
+              <StackPanel>
+                <TextBlock Text="СП КОРР." Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.SyncCorrPct, StringFormat='{}{0}%'}" FontSize="15" FontWeight="Bold" FontFamily="Consolas, monospace" />
+              </StackPanel>
+            </Border>
+            <Border Grid.Row="1" Grid.Column="0" Classes="kpi-card">
+              <StackPanel>
+                <TextBlock Text="ШАГ H" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.StepH, StringFormat='{}{0:0.00000}'}" FontSize="13" FontWeight="Bold" FontFamily="Consolas, monospace" />
+              </StackPanel>
+            </Border>
+            <Border Grid.Row="1" Grid.Column="1" Classes="kpi-card">
+              <StackPanel>
+                <TextBlock Text="CRC32" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.CrcBadge}" FontSize="12" FontWeight="Bold" FontFamily="Consolas, monospace" />
+              </StackPanel>
+            </Border>
+          </Grid>
+        </StackPanel>
+      </ScrollViewer>
+    </DataTemplate>
+
+    <!-- 2. Окно: Осциллограф -->
+    <DataTemplate x:DataType="dp:OscilloscopeDocument">
+      <Border Background="{DynamicResource BgPanelBrush}" Padding="6">
+        <ctrl:OscilloscopeControl RawSamples="{Binding Main.OscRawSamples}"
+                                  FilteredSamples="{Binding Main.OscFilteredSamples}"
+                                  OverflowFlag="{Binding Main.AdcOverflowFlag}"
+                                  TotalSamplesReceived="{Binding Main.TotalSamplesReceived}"
+                                  IsDarkTheme="{Binding Main.IsDarkTheme}" />
+      </Border>
+    </DataTemplate>
+
+    <!-- 3. Окно: Спектр (БПФ) -->
+    <DataTemplate x:DataType="dp:SpectrumDocument">
+      <Border Background="{DynamicResource BgPanelBrush}" Padding="6">
+        <ctrl:SpectrumControl Spectrum="{Binding Main.LatestSpectrum}"
+                              CarrierFreqHz="{Binding Main.CarrierFreqHz}"
+                              IsDarkTheme="{Binding Main.IsDarkTheme}" />
+      </Border>
+    </DataTemplate>
+
+    <!-- 4. Окно: Корреляция RM(1,4) и СП -->
+    <DataTemplate x:DataType="dp:CorrelationDocument">
+      <Border Background="{DynamicResource BgPanelBrush}" Padding="6">
+        <ctrl:CorrelationControl CodeScoresPct="{Binding Main.LatestCodeScoresPct}"
+                                 SyncCorrHistory="{Binding Main.SyncCorrHistory}"
+                                 WinningCode5Bit="{Binding Main.LatestWinningCode5Bit}"
+                                 DcpThreshold="{Binding Main.DcpThreshold}"
+                                 LatestSyncCorrPct="{Binding Main.SyncCorrPct}"
+                                 LastPikDrift="{Binding Main.LastPikDrift}"
+                                 IsDarkTheme="{Binding Main.IsDarkTheme}" />
+      </Border>
+    </DataTemplate>
+
+    <!-- 5. Окно: Инклинометрия и НДМ -->
+    <DataTemplate x:DataType="dp:InclinometryTool">
+      <ScrollViewer VerticalScrollBarVisibility="Auto" Background="{DynamicResource BgPanelBrush}">
+        <StackPanel Spacing="8" Margin="8">
+          <UniformGrid Columns="4" Rows="2">
+            <Border Classes="kpi-card" Margin="0,0,6,6">
+              <StackPanel>
+                <TextBlock Text="ЗЕНИТНЫЙ УГОЛ (ЗУ)" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.ZuDeg, StringFormat='{}{0:0.00}°'}" Classes="kpi-value" Foreground="{DynamicResource AccentAmberBrush}" />
+              </StackPanel>
+            </Border>
+            <Border Classes="kpi-card" Margin="0,0,6,6">
+              <StackPanel>
+                <TextBlock Text="АЗИМУТ ИСТИННЫЙ" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.AzimuthDeg, StringFormat='{}{0:0.00}°'}" Classes="kpi-value" Foreground="{DynamicResource AccentCyanBrush}" />
+              </StackPanel>
+            </Border>
+            <Border Classes="kpi-card" Margin="0,0,6,6">
+              <StackPanel>
+                <TextBlock Text="ГАММА-КАРОТАЖ (ГК)" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.GkZts, StringFormat='{}{0:0.0}'}" Classes="kpi-value" />
+              </StackPanel>
+            </Border>
+            <Border Classes="kpi-card" Margin="0,0,0,6">
+              <StackPanel>
+                <TextBlock Text="ОБОРОТЫ / ВИБРАЦИЯ" Classes="kpi-label" />
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <TextBlock Text="{Binding Main.RpmZts}" Classes="kpi-value" />
+                  <TextBlock Text="{Binding Main.VibrZts, StringFormat='/ V:{0}'}" FontSize="14" VerticalAlignment="Bottom" Margin="0,0,0,3" Foreground="{DynamicResource TextSecondaryBrush}" />
+                </StackPanel>
+              </StackPanel>
+            </Border>
+
+            <Border Classes="kpi-card" Margin="0,0,6,0">
+              <StackPanel>
+                <TextBlock Text="ТЕМПЕРАТУРА ЗТС" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.TempZts, StringFormat='{}{0:0.0} °C'}" FontSize="17" FontWeight="Bold" FontFamily="Consolas, monospace" />
+              </StackPanel>
+            </Border>
+            <Border Classes="kpi-card" Margin="0,0,6,0">
+              <StackPanel>
+                <TextBlock Text="ПИТАНИЕ / БАТАРЕЯ" Classes="kpi-label" />
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <TextBlock Text="{Binding Main.VoltZts, StringFormat='{}{0:0.0} В'}" FontSize="17" FontWeight="Bold" FontFamily="Consolas, monospace" />
+                  <TextBlock Text="{Binding Main.BatteryPct, StringFormat='({0}%)'}" FontSize="12" VerticalAlignment="Bottom" Foreground="{DynamicResource StatusOkBrush}" />
+                </StackPanel>
+              </StackPanel>
+            </Border>
+            <Border Classes="kpi-card" Margin="0,0,6,0">
+              <StackPanel>
+                <TextBlock Text="G_ОБЩ / H_ОБЩ" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.GTotal, StringFormat='G:{0:0.000}'}" FontSize="14" FontWeight="Bold" FontFamily="Consolas, monospace" />
+                <TextBlock Text="{Binding Main.HTotal, StringFormat='H:{0:0} нТл'}" FontSize="11" FontFamily="Consolas, monospace" Foreground="{DynamicResource TextSecondaryBrush}" />
+              </StackPanel>
+            </Border>
+            <Border Classes="kpi-card" Margin="0,0,0,0">
+              <StackPanel>
+                <TextBlock Text="НАКЛОНЕНИЕ (DIP)" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.DipCalcDeg, StringFormat='{}{0:0.00}°'}" FontSize="17" FontWeight="Bold" FontFamily="Consolas, monospace" />
+              </StackPanel>
+            </Border>
+          </UniformGrid>
+
+          <Border Classes="kpi-card" IsVisible="{Binding Main.IsNdmVisible}">
+            <StackPanel Spacing="4">
+              <TextBlock Text="НАДДОЛОТНЫЙ МОДУЛЬ (НДМ — ФОРМАТ №2)" Classes="section-title" />
+              <UniformGrid Columns="6">
+                <TextBlock Text="{Binding Main.ZuNdmDeg, StringFormat='ЗУ НДМ: {0:0.00}°'}" FontFamily="Consolas, monospace" FontSize="12" />
+                <TextBlock Text="{Binding Main.GkUpNdm, StringFormat='ГК верх: {0:0.0}'}" FontFamily="Consolas, monospace" FontSize="12" />
+                <TextBlock Text="{Binding Main.GkDnNdm, StringFormat='ГК низ: {0:0.0}'}" FontFamily="Consolas, monospace" FontSize="12" />
+                <TextBlock Text="{Binding Main.WobNdm, StringFormat='WOB: {0:0.0} т'}" FontFamily="Consolas, monospace" FontSize="12" />
+                <TextBlock Text="{Binding Main.TorqueNdm, StringFormat='Момент: {0:0.0}'}" FontFamily="Consolas, monospace" FontSize="12" />
+                <TextBlock Text="{Binding Main.PressNdm, StringFormat='Давл.: {0:0.0}'}" FontFamily="Consolas, monospace" FontSize="12" />
+              </UniformGrid>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
+    </DataTemplate>
+
+    <!-- 6. Окно: Векторы RM(1,4) -->
+    <DataTemplate x:DataType="dp:VectorsTool">
+      <Border Background="{DynamicResource BgPanelBrush}" Padding="8">
+        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+          <ItemsControl ItemsSource="{Binding Main.DecodedVectors}">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <WrapPanel Orientation="Horizontal" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:VectorCellViewModel">
+                <Border Background="{DynamicResource BgCardBrush}"
+                        BorderBrush="{Binding StatusBrush}"
+                        BorderThickness="1"
+                        CornerRadius="3"
+                        Margin="0,0,4,4"
+                        Padding="6,3">
+                  <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding Index, StringFormat='V{0}'}" FontSize="9" Foreground="{DynamicResource TextSecondaryBrush}" HorizontalAlignment="Center" />
+                    <TextBlock Text="{Binding CodeHex}" FontSize="12" FontWeight="Bold" FontFamily="Consolas, monospace" HorizontalAlignment="Center" />
+                    <TextBlock Text="{Binding ReliabilityPct, StringFormat='{}{0}%'}" FontSize="9" Foreground="{Binding StatusBrush}" HorizontalAlignment="Center" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </Border>
+    </DataTemplate>
+
+    <!-- 7. Правая панель: Отклонитель OTK (Zero-Latency) -->
+    <DataTemplate x:DataType="dp:ToolfaceTool">
+      <Border Background="{DynamicResource BgPanelBrush}" Padding="10">
+        <Grid RowDefinitions="*,Auto" RowSpacing="8">
+          <ctrl:ToolfaceDialControl Grid.Row="0"
+                                    MinHeight="240"
+                                    AngleDeg="{Binding Main.ToolfaceAngleDeg}"
+                                    ReliabilityPct="{Binding Main.ToolfaceReliabilityPct}"
+                                    LatencyMs="{Binding Main.ToolfaceLatencyMs}"
+                                    Channel="{Binding Main.ToolfaceChannel}"
+                                    HistoryAngles="{Binding Main.ToolfaceHistory}"
+                                    IsDarkTheme="{Binding Main.IsDarkTheme}" />
+          <Grid Grid.Row="1" ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="6" RowSpacing="6">
+            <Border Grid.Row="0" Grid.Column="0" Classes="kpi-card">
+              <StackPanel>
+                <TextBlock Text="ОБНОВЛЕНИЙ ОТК" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.ToolfaceUpdatesCount}" FontSize="16" FontWeight="Bold" FontFamily="Consolas, monospace" />
+              </StackPanel>
+            </Border>
+            <Border Grid.Row="0" Grid.Column="1" Classes="kpi-card">
+              <StackPanel>
+                <TextBlock Text="ЗАДЕРЖКА ЦОС" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.ToolfaceLatencyMs, StringFormat='{}{0:0.00} мс'}" FontSize="16" FontWeight="Bold" FontFamily="Consolas, monospace" Foreground="{DynamicResource StatusOkBrush}" />
+              </StackPanel>
+            </Border>
+            <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Classes="kpi-card">
+              <StackPanel>
+                <TextBlock Text="ДРЕЙФ ПИКА СП (PIK5)" Classes="kpi-label" />
+                <TextBlock Text="{Binding Main.LastPikDrift, StringFormat='{}{0:+#;-#;0} отсч.'}" FontSize="14" FontWeight="Bold" FontFamily="Consolas, monospace" />
+              </StackPanel>
+            </Border>
+          </Grid>
+        </Grid>
+      </Border>
+    </DataTemplate>
+
+  </Application.DataTemplates>
 </Application>

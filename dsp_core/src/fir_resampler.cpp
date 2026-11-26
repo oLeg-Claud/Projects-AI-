@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -22,7 +23,11 @@ int32_t FirFilter::load_from_file(const char* path) {
         return 0;
     }
 
+#if defined(_WIN32)
+    std::ifstream in(std::filesystem::u8path(path));
+#else
     std::ifstream in(path);
+#endif
     if (!in.is_open()) return DSP_ERR_FILE_OPEN;
 
     std::vector<double> coeffs;

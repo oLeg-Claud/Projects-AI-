@@ -105,11 +105,26 @@ public sealed record VectorReading(
     byte Code5Bit,
     int ReliabilityPct,
     int PeakOffsetIg,
-    int PhasePolarity)
+    int PhasePolarity,
+    int[] CodeScoresPct)
 {
-    public static VectorReading FromNative(in DspVectorEventNative evt) =>
-        new(evt.FrameNumber, evt.VectorIndex, evt.TotalVectors, evt.Code5Bit,
-            evt.ReliabilityPct, evt.PeakOffsetIg, evt.PhasePolarity);
+    public static unsafe VectorReading FromNative(in DspVectorEventNative evt)
+    {
+        var copy = evt;
+        int[] scores = new int[DspConstants.Rm14Codes];
+        for (int i = 0; i < DspConstants.Rm14Codes; i++)
+            scores[i] = copy.CodeScoresPct[i];
+
+        return new VectorReading(
+            copy.FrameNumber,
+            copy.VectorIndex,
+            copy.TotalVectors,
+            copy.Code5Bit,
+            copy.ReliabilityPct,
+            copy.PeakOffsetIg,
+            copy.PhasePolarity,
+            scores);
+    }
 }
 
 public sealed record SignalSnapshot(
