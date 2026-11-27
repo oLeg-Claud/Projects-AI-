@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <random>
+#include <fstream>
 #include <thread>
 #include <vector>
 
@@ -62,6 +63,10 @@ std::vector<double> synthesize_frames(
 
         /* Data vectors (RM(1,4) + 5th bit phase inversion) */
         for (uint8_t code5 : frames[f]) {
+            if (code5 == 255) { // Silent repeater slot, exactly one vector long.
+                virt.insert(virt.end(), DSP_VEC_SAMPLES, 0.0);
+                continue;
+            }
             const uint32_t word = dsp::kGcodes[static_cast<size_t>(ncod)][code5 & 0x0Fu];
             const double inv = (code5 & 0x10u) ? -1.0 : 1.0;
             for (int b = 0; b < 32; ++b) {
@@ -601,10 +606,104 @@ void test_real_downhole_smp_sp_and_nonblocking_configure() {
     }
 }
 
+
+void test_recorded_format13_16hz() {
+    std::ifstream input(DSP_TEST_FIXTURES "/format13_16hz.i32", std::ios::binary);
+    CHECK(input.good());
+    std::vector<double> signal;
+    int32_t sample;
+    while (input.read(reinterpret_cast<char*>(&sample), sizeof(sample))) signal.push_back(sample);
+    CHECK(signal.size() == 56100);
+    const uint8_t expected[3][37] = {
+        {8,0,7,31,31,31,16,7,31,31,8,0,7,31,0,2,0,7,31,0,0,0,7,31,0,0,15,31,0,0,0,23,31,0,0,15,31},
+        {9,0,7,31,31,31,16,31,31,31,8,0,31,31,0,2,0,31,31,0,0,0,31,31,0,0,15,31,0,0,0,23,31,0,0,15,31},
+        {1,0,7,31,31,31,16,31,31,31,8,0,31,31,0,2,0,31,31,0,0,0,31,31,0,0,15,31,0,0,0,23,31,0,0,15,31}
+    };
+    std::vector<DspFrameData> frames;
+    DspCallbacks cb{};
+    cb.user_data = &frames;
+    cb.on_frame = [](const DspFrameData* f, void* u) {
+        static_cast<std::vector<DspFrameData>*>(u)->push_back(*f);
+    };
+    DspConfig cfg{};
+    dsp_config_default(&cfg);
+    cfg.format_id = DSP_FMT_STD_RETR;
+    cfg.carrier_freq_hz = 16;
+    cfg.sample_rate_hz = 400;
+    auto* engine = dsp_create(&cfg, &cb);
+    CHECK(engine != nullptr);
+    for (size_t i = 0; i < signal.size(); i += 100) {
+        CHECK(dsp_push_samples(engine, signal.data() + i,
+            static_cast<int>(std::min<size_t>(100, signal.size() - i)), 0) == DSP_OK);
+    }
+    dsp_destroy(engine);
+    CHECK(frames.size() == 3);
+    for (size_t f = 0; f < frames.size(); ++f) {
+        CHECK(frames[f].vector_count == 37);
+        CHECK(frames[f].sync_corr_pct >= 90);
+        for (int i = 0; i < 37; ++i) {
+            CHECK(frames[f].vectors_5bit[i] == expected[f][i]);
+            if (i == 1 || i == 11 || i == 21 || i == 30) CHECK(frames[f].reliabilities[i] == 0);
+            else CHECK(frames[f].reliabilities[i] >= 90);
+        }
+    }
+    ++g_tests_passed;
+    std::puts("[PASS] test_recorded_format13_16hz (3 complete live frames, all 99 data vectors matched)");
+}
+
+void test_format13_single_vector_pauses() {
+    for (double hz : {16.0, 5.0}) {
+        DspConfig cfg{};
+        dsp_config_default(&cfg);
+        cfg.format_id = DSP_FMT_STD_RETR;
+        cfg.carrier_freq_hz = hz;
+        cfg.sample_rate_hz = 400;
+        cfg.enable_step_track = 0;
+        std::vector<uint8_t> codes(37);
+        for (int i = 0; i < 37; ++i) codes[i] = static_cast<uint8_t>((i * 7 + 3) % 32);
+        for (int pause : {1, 11, 21, 30}) codes[pause] = 255;
+        struct Capture { std::vector<DspFrameData> frames; int vectors = 0; } cap;
+        DspCallbacks cb{};
+        cb.user_data = &cap;
+        cb.on_frame = [](const DspFrameData* f, void* u) {
+            static_cast<Capture*>(u)->frames.push_back(*f);
+        };
+        cb.on_vector = [](const DspVectorEvent* v, void* u) {
+            CHECK(v->total_vectors == 37);
+            CHECK(v->vector_index != 1 && v->vector_index != 11 &&
+                  v->vector_index != 21 && v->vector_index != 30);
+            ++static_cast<Capture*>(u)->vectors;
+        };
+        const auto signal = synthesize_frames(0, -1, {codes, codes, codes},
+            dsp::compute_nominal_step_h(400, hz, cfg.source_type), 1e7, 1000, 13);
+        auto* engine = dsp_create(&cfg, &cb);
+        CHECK(engine != nullptr);
+        for (size_t i = 0; i < signal.size(); i += 100) {
+            CHECK(dsp_push_samples(engine, signal.data() + i,
+                static_cast<int>(std::min<size_t>(100, signal.size() - i)), 0) == DSP_OK);
+        }
+        dsp_destroy(engine);
+        CHECK(cap.frames.size() == 3);
+        CHECK(cap.vectors == 99);
+        for (const auto& frame : cap.frames) {
+            CHECK(frame.vector_count == 37);
+            for (int i = 0; i < 37; ++i) {
+                if (codes[i] == 255) { CHECK(frame.reliabilities[i] == 0); continue; }
+                CHECK(frame.vectors_5bit[i] == codes[i]);
+                CHECK(frame.reliabilities[i] >= 90);
+            }
+        }
+    }
+    ++g_tests_passed;
+    std::puts("[PASS] test_format13_single_vector_pauses (3 frames, 33 data vectors, 4 pauses; 16/5 Hz)");
+}
+
 } // namespace
 
 int main() {
     std::printf("=== DspCore Native C++17 Verification Suite (ISA: %s) ===\n", dsp_get_simd_isa());
+    test_recorded_format13_16hz();
+    test_format13_single_vector_pauses();
     test_legacy_packet_parser();
     test_double_precision_32bit_adc_correlation();
     test_zero_latency_toolface_callback();

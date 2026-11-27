@@ -117,7 +117,10 @@ void FrameDecoder::configure(const DspConfig& cfg) {
     cfg_ = cfg;
     const FormatGeometry g = get_format_geometry(cfg_.format_id);
     base_vectors_        = g.base_vectors;
-    pause_vecs_per_slot_ = (g.pause_slots > 0) ? get_pause_vectors_per_slot(cfg_.carrier_freq_hz) : 0;
+    // Format 13 uses one vector per repeater pause, including at 16 Hz.
+    // Its 37 slots already include pauses at logical indices 1, 11, 21, 30.
+    pause_vecs_per_slot_ = cfg_.format_id == DSP_FMT_STD_RETR ? 1
+        : (g.pause_slots > 0 ? get_pause_vectors_per_slot(cfg_.carrier_freq_hz) : 0);
 }
 
 void FrameDecoder::begin_frame(
