@@ -244,4 +244,9 @@ public sealed record FrameSnapshot(
     }
 }
 
-public sealed record UsoProbeResult(string PortName, bool Detected, int UsoId, DspStatusCode Status);
+public sealed record UsoProbeResult(
+    string PortName,
+    bool Detected,
+    int UsoId,
+    DspStatusCode Status,
+    string Diagnostics = "");

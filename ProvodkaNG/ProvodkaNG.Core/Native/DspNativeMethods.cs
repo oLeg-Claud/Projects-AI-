@@ -46,14 +46,20 @@ public static unsafe class DspNativeMethods
         [
             Path.Combine(baseDir, fileName),
             Path.Combine(baseDir, "runtimes", RuntimeInformation.RuntimeIdentifier, "native", fileName),
-            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "out", "build", "x64-Release", fileName)),
             Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "out", "build", "x64-Debug", fileName)),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "out", "build", "x64-Release", fileName)),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "out", "build", "Debug", fileName)),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "out", "build", "Release", fileName)),
             Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "out", "build", fileName)),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "build", "Debug", fileName)),
             Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "build", "Release", fileName)),
             Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "dsp_core", "build", fileName)),
-            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "out", "build", "x64-Release", fileName)),
             Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "out", "build", "x64-Debug", fileName)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "out", "build", "x64-Release", fileName)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "out", "build", "Debug", fileName)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "out", "build", "Release", fileName)),
             Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "out", "build", fileName)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "build", "Debug", fileName)),
             Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "build", "Release", fileName)),
             Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "dsp_core", "build", fileName))
         ];

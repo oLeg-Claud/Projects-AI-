@@ -1,0 +1,47 @@
+<Project>
+  <!-- Ensure Visual Studio always checks for newly rebuilt native C++ DspCore.dll / libDspCore.so -->
+  <PropertyGroup>
+    <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
+  </PropertyGroup>
+
+  <Target Name="CopyNativeDspCore" AfterTargets="Build">
+    <PropertyGroup>
+      <_DspRoot>$(MSBuildThisFileDirectory)..\dsp_core</_DspRoot>
+
+      <!-- Windows DspCore.dll: prefer matching Configuration first, then fallback across all CMake/VS dirs -->
+      <_NativeDll Condition="Exists('$(_DspRoot)\out\build\x64-$(Configuration)\DspCore.dll')">$(_DspRoot)\out\build\x64-$(Configuration)\DspCore.dll</_NativeDll>
+      <_NativeDll Condition="'$(_NativeDll)' == '' and Exists('$(_DspRoot)\out\build\$(Configuration)\DspCore.dll')">$(_DspRoot)\out\build\$(Configuration)\DspCore.dll</_NativeDll>
+      <_NativeDll Condition="'$(_NativeDll)' == '' and Exists('$(_DspRoot)\build\$(Configuration)\DspCore.dll')">$(_DspRoot)\build\$(Configuration)\DspCore.dll</_NativeDll>
+      <_NativeDll Condition="'$(_NativeDll)' == '' and Exists('$(_DspRoot)\out\build\x64-Debug\DspCore.dll')">$(_DspRoot)\out\build\x64-Debug\DspCore.dll</_NativeDll>
+      <_NativeDll Condition="'$(_NativeDll)' == '' and Exists('$(_DspRoot)\out\build\x64-Release\DspCore.dll')">$(_DspRoot)\out\build\x64-Release\DspCore.dll</_NativeDll>
+      <_NativeDll Condition="'$(_NativeDll)' == '' and Exists('$(_DspRoot)\out\build\Debug\DspCore.dll')">$(_DspRoot)\out\build\Debug\DspCore.dll</_NativeDll>
+      <_NativeDll Condition="'$(_NativeDll)' == '' and Exists('$(_DspRoot)\out\build\Release\DspCore.dll')">$(_DspRoot)\out\build\Release\DspCore.dll</_NativeDll>
+      <_NativeDll Condition="'$(_NativeDll)' == '' and Exists('$(_DspRoot)\out\build\DspCore.dll')">$(_DspRoot)\out\build\DspCore.dll</_NativeDll>
+      <_NativeDll Condition="'$(_NativeDll)' == '' and Exists('$(_DspRoot)\build\Debug\DspCore.dll')">$(_DspRoot)\build\Debug\DspCore.dll</_NativeDll>
+      <_NativeDll Condition="'$(_NativeDll)' == '' and Exists('$(_DspRoot)\build\Release\DspCore.dll')">$(_DspRoot)\build\Release\DspCore.dll</_NativeDll>
+      <_NativeDll Condition="'$(_NativeDll)' == '' and Exists('$(_DspRoot)\build\DspCore.dll')">$(_DspRoot)\build\DspCore.dll</_NativeDll>
+
+      <!-- Linux / macOS native shared library -->
+      <_NativeSo Condition="Exists('$(_DspRoot)\build\libDspCore.so')">$(_DspRoot)\build\libDspCore.so</_NativeSo>
+      <_NativeDylib Condition="Exists('$(_DspRoot)\build\libDspCore.dylib')">$(_DspRoot)\build\libDspCore.dylib</_NativeDylib>
+    </PropertyGroup>
+
+    <Copy SourceFiles="$(_NativeDll)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="'$(_NativeDll)' != ''" />
+    <Message Text="Copied native DspCore.dll from $(_NativeDll) to $(OutDir)"
+             Importance="High"
+             Condition="'$(_NativeDll)' != ''" />
+
+    <Copy SourceFiles="$(_NativeSo)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="'$(_NativeSo)' != ''" />
+
+    <Copy SourceFiles="$(_NativeDylib)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="'$(_NativeDylib)' != ''" />
+  </Target>
+</Project>

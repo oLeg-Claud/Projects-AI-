@@ -462,6 +462,16 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_scan_legacy_uso(
     return dsp::LegacySerialUsoSource::scan_ports(out_port_buf, buf_len, out_uso_id);
 }
 
+DSPCORE_API int32_t DSPCORE_CALL dsp_scan_legacy_uso_diag(
+    char* out_port_buf,
+    int32_t buf_len,
+    int32_t* out_uso_id,
+    char* out_diag_buf,
+    int32_t diag_len
+) {
+    return dsp::LegacySerialUsoSource::scan_ports_diag(out_port_buf, buf_len, out_uso_id, out_diag_buf, diag_len);
+}
+
 DSPCORE_API int32_t DSPCORE_CALL dsp_parse_legacy_packet(
     const uint8_t* packet,
     int32_t packet_len,

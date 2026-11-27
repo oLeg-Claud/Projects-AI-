@@ -90,7 +90,8 @@ intptr_t open_serial_57600_8n1(const char* port_name, int32_t read_timeout_ms) {
 
     COMMTIMEOUTS cto{};
     if (!GetCommTimeouts(h, &cto)) { CloseHandle(h); return -1; }
-    cto.ReadIntervalTimeout         = 15;
+    /* Match TRAEKT2k.cpp / YCO8_1.cpp: ReadIntervalTimeout=0 so FTDI 16ms USB chunks never abort early */
+    cto.ReadIntervalTimeout         = 0;
     cto.ReadTotalTimeoutMultiplier  = 0;
     cto.ReadTotalTimeoutConstant    = static_cast<DWORD>(read_timeout_ms);
     cto.WriteTotalTimeoutMultiplier = 0;
@@ -100,18 +101,11 @@ intptr_t open_serial_57600_8n1(const char* port_name, int32_t read_timeout_ms) {
     DCB dcb{};
     dcb.DCBlength = sizeof(DCB);
     if (!GetCommState(h, &dcb)) { CloseHandle(h); return -1; }
-    dcb.BaudRate        = CBR_57600;
-    dcb.ByteSize        = 8;
-    dcb.Parity          = NOPARITY;
-    dcb.StopBits        = ONESTOPBIT;
-    dcb.fBinary         = TRUE;
-    dcb.fParity         = FALSE;
-    dcb.fOutxCtsFlow    = FALSE;
-    dcb.fOutxDsrFlow    = FALSE;
-    dcb.fDtrControl     = DTR_CONTROL_ENABLE;
-    dcb.fRtsControl     = RTS_CONTROL_ENABLE;
-    dcb.fOutX           = FALSE;
-    dcb.fInX            = FALSE;
+    /* Match TRAEKT2k.cpp lines 2685-2689: do NOT override fDtrControl / fRtsControl */
+    dcb.BaudRate = CBR_57600;
+    dcb.ByteSize = 8;
+    dcb.Parity   = NOPARITY;
+    dcb.StopBits = ONESTOPBIT;
     if (!SetCommState(h, &dcb)) { CloseHandle(h); return -1; }
 
     PurgeComm(h, PURGE_TXABORT | PURGE_RXABORT | PURGE_TXCLEAR | PURGE_RXCLEAR);
@@ -175,6 +169,19 @@ bool serial_write_byte(intptr_t handle, uint8_t b) {
 #endif
 }
 
+bool serial_transmit_immediate(intptr_t handle, uint8_t b) {
+    if (handle < 0) return false;
+#if defined(_WIN32)
+    /* Matches TRAEKT2k.cpp line 2695: TransmitCommChar(iport, 0xAA) */
+    if (TransmitCommChar(reinterpret_cast<HANDLE>(handle), static_cast<char>(b))) {
+        return true;
+    }
+    return serial_write_byte(handle, b);
+#else
+    return serial_write_byte(handle, b);
+#endif
+}
+
 FILE* open_file_utf8_rb(const char* path) {
     if (!path || path[0] == '\0') return nullptr;
 #if defined(_WIN32)
@@ -232,63 +239,107 @@ int32_t serial_read_bytes(intptr_t handle, uint8_t* dst, int32_t len, int32_t ti
 #endif
 }
 
-} // namespace
-
-/* ============================================================================
- * 1. LegacySerialUsoSource Implementation
- * ============================================================================ */
-LegacySerialUsoSource::LegacySerialUsoSource()
-    : handle_(-1), bit_mode_(32), gain_index_(0), synced_(false) {}
-
-LegacySerialUsoSource::~LegacySerialUsoSource() {
-    close();
-}
-
-int32_t LegacySerialUsoSource::probe_port(const char* port_name, int32_t* out_uso_id) {
+int32_t probe_port_internal(const char* port_name, int32_t* out_uso_id, std::string* diag_out) {
     if (!port_name || !out_uso_id) return DSP_ERR_INVALID_ARG;
     *out_uso_id = 0;
 
-    intptr_t h = open_serial_57600_8n1(port_name, 70);
-    if (h < 0) return DSP_ERR_PORT_OPEN;
-
-    int32_t status = DSP_ERR_NOT_FOUND;
-
-    /* 1. Stop any active ADC streaming so 0x66 response isn't buried in ADC bytes */
-    serial_write_byte(h, 0x10);
-    std::this_thread::sleep_for(std::chrono::milliseconds(25));
-    purge_serial_handle(h);
-
-    /* 2. Match legacy TRAEKT2k.cpp N_USO (lines 2695-2710):
-     *    Send 0xAA, optionally consume 1 byte, and ALWAYS proceed to 0x66 even if 0x55 is absent */
-    if (serial_write_byte(h, 0xAA)) {
-        uint8_t ack = 0;
-        (void)serial_read_bytes(h, &ack, 1, 35);
+    intptr_t h = open_serial_57600_8n1(port_name, 80);
+    if (h < 0) {
+        if (diag_out) *diag_out = std::string(port_name) + "(open_err)";
+        return DSP_ERR_PORT_OPEN;
     }
 
-    if (serial_write_byte(h, 0x66)) {
-        uint8_t info[16]{};
-        int32_t got = serial_read_bytes(h, info, 16, 100);
-        for (int32_t i = 0; i + 4 < got; ++i) {
-            if (info[i] == 0x01 && info[i + 4] == 0xFF) {
-                *out_uso_id = static_cast<int32_t>(info[i + 1]);
-                status = DSP_OK;
-                break;
-            }
+    auto try_handshake = [&](uint8_t* last_buf, int32_t* last_got) -> bool {
+        /* Exact TRAEKT2k.cpp N_USO lines 2695-2710:
+         * TransmitCommChar(0xAA) -> ReadFile(1) -> WriteFile(0x66) -> ReadFile(5) */
+        serial_transmit_immediate(h, 0xAA);
+        uint8_t ack = 0;
+        (void)serial_read_bytes(h, &ack, 1, 50);
+
+        if (!serial_write_byte(h, 0x66)) {
+            *last_got = -1;
+            return false;
         }
+        uint8_t info[5]{};
+        int32_t got = serial_read_bytes(h, info, 5, 100);
+        *last_got = got;
+        if (got > 0) std::memcpy(last_buf, info, static_cast<size_t>(got));
+
+        if (got == 5 && info[0] == 0x01 && info[4] == 0xFF) {
+            *out_uso_id = static_cast<int32_t>(info[1]);
+            return true;
+        }
+        return false;
+    };
+
+    uint8_t rx[5]{};
+    int32_t got = 0;
+    bool ok = try_handshake(rx, &got);
+
+    /* Pass 2 fallback: only if USO32 was mid-stream and 0x66 reply was mixed with ADC bytes */
+    if (!ok) {
+        serial_write_byte(h, 0x10);
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        purge_serial_handle(h);
+        ok = try_handshake(rx, &got);
     }
 
     close_serial_handle(h);
-    return status;
+
+    if (diag_out) {
+        if (ok) {
+            *diag_out = std::string(port_name) + "(УСО#" + std::to_string(*out_uso_id) + ")";
+        } else if (got <= 0) {
+            *diag_out = std::string(port_name) + "(0б)";
+        } else {
+            char hex[32]{};
+            int pos = 0;
+            for (int32_t i = 0; i < got && i < 5; ++i) {
+                pos += std::snprintf(hex + pos, sizeof(hex) - static_cast<size_t>(pos),
+                                     (i == 0 ? "%02X" : " %02X"), rx[i]);
+            }
+            *diag_out = std::string(port_name) + "(rx:" + hex + ")";
+        }
+    }
+
+    return ok ? DSP_OK : DSP_ERR_NOT_FOUND;
 }
 
-int32_t LegacySerialUsoSource::scan_ports(char* out_port_buf, int32_t buf_len, int32_t* out_uso_id) {
-    if (!out_port_buf || buf_len <= 1 || !out_uso_id) return DSP_ERR_INVALID_ARG;
-    out_port_buf[0] = '\0';
-    *out_uso_id = 0;
-
+std::vector<std::string> enumerate_serial_ports() {
     std::vector<std::string> ports;
+    auto add_unique = [&](const std::string& p) {
+        if (p.empty()) return;
+        for (const auto& existing : ports) {
+            if (existing == p) return;
+        }
+        ports.push_back(p);
+    };
 
 #if defined(_WIN32)
+    /* 1. Kernel DOS device namespace (works on all Windows versions without Registry ACL issues) */
+    std::vector<char> dos_buf(65536, '\0');
+    DWORD len = QueryDosDeviceA(nullptr, dos_buf.data(), static_cast<DWORD>(dos_buf.size()));
+    if (len > 0) {
+        const char* p = dos_buf.data();
+        while (*p != '\0') {
+            std::string name(p);
+            if (name.size() >= 4 &&
+                (name[0] == 'C' || name[0] == 'c') &&
+                (name[1] == 'O' || name[1] == 'o') &&
+                (name[2] == 'M' || name[2] == 'm')) {
+                bool digits = true;
+                for (size_t i = 3; i < name.size(); ++i) {
+                    if (name[i] < '0' || name[i] > '9') { digits = false; break; }
+                }
+                if (digits) {
+                    add_unique("COM" + name.substr(3));
+                }
+            }
+            p += name.size() + 1;
+        }
+    }
+
+    /* 2. Also merge HKLM\HARDWARE\DEVICEMAP\SERIALCOMM */
     HKEY hKey = nullptr;
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DEVICEMAP\\SERIALCOMM", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         char val_name[256]{};
@@ -304,7 +355,7 @@ int32_t LegacySerialUsoSource::scan_ports(char* out_port_buf, int32_t buf_len, i
             if (rc == ERROR_NO_MORE_ITEMS) break;
             if (rc == ERROR_SUCCESS && val_type == REG_SZ && data_len > 0) {
                 val_data[data_len] = '\0';
-                ports.emplace_back(val_data);
+                add_unique(val_data);
             }
         }
         RegCloseKey(hKey);
@@ -328,21 +379,76 @@ int32_t LegacySerialUsoSource::scan_ports(char* out_port_buf, int32_t buf_len, i
         for (int i = 0; i < 16; ++i) {
             std::string candidate = std::string(pfx) + std::to_string(i);
             if (::access(candidate.c_str(), R_OK | W_OK) == 0) {
-                ports.push_back(candidate);
+                add_unique(candidate);
             }
         }
     }
 #endif
 
+    return ports;
+}
+
+} // namespace
+
+/* ============================================================================
+ * 1. LegacySerialUsoSource Implementation
+ * ============================================================================ */
+LegacySerialUsoSource::LegacySerialUsoSource()
+    : handle_(-1), bit_mode_(32), gain_index_(0), synced_(false) {}
+
+LegacySerialUsoSource::~LegacySerialUsoSource() {
+    close();
+}
+
+int32_t LegacySerialUsoSource::probe_port(const char* port_name, int32_t* out_uso_id) {
+    return probe_port_internal(port_name, out_uso_id, nullptr);
+}
+
+int32_t LegacySerialUsoSource::scan_ports(char* out_port_buf, int32_t buf_len, int32_t* out_uso_id) {
+    return scan_ports_diag(out_port_buf, buf_len, out_uso_id, nullptr, 0);
+}
+
+int32_t LegacySerialUsoSource::scan_ports_diag(
+    char* out_port_buf,
+    int32_t buf_len,
+    int32_t* out_uso_id,
+    char* out_diag_buf,
+    int32_t diag_len
+) {
+    if (!out_port_buf || buf_len <= 1 || !out_uso_id) return DSP_ERR_INVALID_ARG;
+    out_port_buf[0] = '\0';
+    *out_uso_id = 0;
+    if (out_diag_buf && diag_len > 0) out_diag_buf[0] = '\0';
+
+    std::vector<std::string> ports = enumerate_serial_ports();
+    if (ports.empty()) {
+        if (out_diag_buf && diag_len > 1) {
+            std::snprintf(out_diag_buf, static_cast<size_t>(diag_len), "COM-порты не найдены");
+        }
+        return DSP_ERR_NOT_FOUND;
+    }
+
+    std::string diag;
     for (const auto& port : ports) {
         int32_t id = 0;
-        if (probe_port(port.c_str(), &id) == DSP_OK) {
+        std::string item_diag;
+        int32_t rc = probe_port_internal(port.c_str(), &id, &item_diag);
+        if (!diag.empty()) diag += ", ";
+        diag += item_diag;
+
+        if (rc == DSP_OK) {
             std::snprintf(out_port_buf, static_cast<size_t>(buf_len), "%s", port.c_str());
             *out_uso_id = id;
+            if (out_diag_buf && diag_len > 1) {
+                std::snprintf(out_diag_buf, static_cast<size_t>(diag_len), "%s", diag.c_str());
+            }
             return DSP_OK;
         }
     }
 
+    if (out_diag_buf && diag_len > 1) {
+        std::snprintf(out_diag_buf, static_cast<size_t>(diag_len), "%s", diag.c_str());
+    }
     return DSP_ERR_NOT_FOUND;
 }
 
@@ -353,12 +459,10 @@ int32_t LegacySerialUsoSource::open(const DspConfig& cfg) {
     gain_index_ = cfg.gain_index;
     synced_     = false;
 
-    handle_ = open_serial_57600_8n1(cfg.port_or_path, 60);
+    handle_ = open_serial_57600_8n1(cfg.port_or_path, 250);
     if (handle_ < 0) return DSP_ERR_PORT_OPEN;
 
-    /* Stop any stale stream and flush buffers before hardware initialization */
-    write_byte(0x10);
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    /* Hardware initialization sequence matching YCO8_1.cpp lines 67-99 (uco32) */
     purge_serial_handle(handle_);
 
     /* Hardware initialization sequence matching YCO8_1.cpp lines 70-98 (uco32) */

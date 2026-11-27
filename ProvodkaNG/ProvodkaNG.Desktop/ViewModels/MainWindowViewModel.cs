@@ -489,10 +489,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         UsoProbeResult probe = _usoScanner();
         if (!probe.Detected || string.IsNullOrEmpty(probe.PortName))
         {
+            string details = string.IsNullOrWhiteSpace(probe.Diagnostics)
+                ? "порты не ответили"
+                : probe.Diagnostics;
             _dispatchToUi(() =>
             {
-                DetectedUsoLabel = "УСО32 не обнаружено";
-                StatusBanner = "УСО32 не найдено — повторный поиск через 1.5 с...";
+                DetectedUsoLabel = $"Нет УСО32 ({details})";
+                StatusBanner = $"УСО32 не найдено [{details}] — повтор через 1.5 с...";
             });
             await DelayWithWakeupAsync(1500, ct);
             return;

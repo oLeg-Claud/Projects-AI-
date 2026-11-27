@@ -266,6 +266,18 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_scan_legacy_uso(
 );
 
 /**
+ * Same as dsp_scan_legacy_uso, plus writes human-readable per-port probe diagnostics
+ * (found COM ports, open errors, raw hex replies) into out_diag_buf.
+ */
+DSPCORE_API int32_t DSPCORE_CALL dsp_scan_legacy_uso_diag(
+    char* out_port_buf,
+    int32_t buf_len,
+    int32_t* out_uso_id,
+    char* out_diag_buf,
+    int32_t diag_len
+);
+
+/**
  * Utility: Parse one legacy 5-byte (24-bit) or 6-byte (32-bit uco32) USO packet.
  * Verifies 0x00 header and 0xFF/0xFE trailer. Returns DSP_OK, DSP_ERR_OVERFLOW (0xFE), or DSP_ERR_INVALID_ARG.
  */

@@ -130,12 +130,15 @@ public sealed unsafe class DspEngineClient : IDspEngineClient
     public static UsoProbeResult ScanLegacyUso()
     {
         DspNativeMethods.EnsureResolverRegistered();
-        byte* buf = stackalloc byte[DspConstants.PathBufferSize];
-        DspStatusCode status = DspNativeMethods.ScanLegacyUso(buf, DspConstants.PathBufferSize, out int usoId);
+        byte* portBuf = stackalloc byte[DspConstants.PathBufferSize];
+        byte* diagBuf = stackalloc byte[512];
+        DspStatusCode status = DspNativeMethods.ScanLegacyUsoDiag(
+            portBuf, DspConstants.PathBufferSize, out int usoId, diagBuf, 512);
         string port = status == DspStatusCode.Ok
-            ? DspConfigNative.ReadNullTerminatedUtf8(buf, DspConstants.PathBufferSize)
+            ? DspConfigNative.ReadNullTerminatedUtf8(portBuf, DspConstants.PathBufferSize)
             : string.Empty;
-        return new UsoProbeResult(port, status == DspStatusCode.Ok, usoId, status);
+        string diag = DspConfigNative.ReadNullTerminatedUtf8(diagBuf, 512);
+        return new UsoProbeResult(port, status == DspStatusCode.Ok, usoId, status, diag);
     }
 
     public static (DspStatusCode Status, int Sample) ParseLegacyPacket(ReadOnlySpan<byte> packet, int bitMode)
