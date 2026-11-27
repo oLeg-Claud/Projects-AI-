@@ -81,10 +81,10 @@ public sealed class SpectrumControl : Control
         double plotW = Math.Max(10, w - padLeft - padRight);
         double plotH = Math.Max(10, h - padTop - padBottom);
 
-        // Display range: 0 .. 40 Hz zoomed band for MWD carriers (1.8..16 Hz) + harmonics
+        // Display range: 0 .. 65 Hz band covering MWD carriers (1.8..16 Hz), harmonics, and 50/60 Hz mains noise
         SpectrumSnapshot? spec = Spectrum;
         double nyquist = spec?.SampleRateHz * 0.5 ?? 125.0;
-        double maxFreqHz = Math.Min(nyquist, 40.0);
+        double maxFreqHz = Math.Min(nyquist, 65.0);
         const double minDb = -80.0;
         const double maxDb = 0.0;
 
@@ -97,13 +97,19 @@ public sealed class SpectrumControl : Control
             context.DrawText(lbl, new Point(4, y - lbl.Height * 0.5));
         }
 
-        // Vertical frequency grid (every 5 Hz)
+        // Vertical frequency grid (every 5 Hz up to 65 Hz)
+        double labelStep = plotW < 340 ? 10.0 : 5.0;
         for (double f = 0; f <= maxFreqHz + 0.1; f += 5.0)
         {
             double x = padLeft + (f / maxFreqHz) * plotW;
             context.DrawLine(gridPen, new Point(x, padTop), new Point(x, padTop + plotH));
-            var lbl = new FormattedText($"{f:0}", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, 9.5, mutedBrush);
-            context.DrawText(lbl, new Point(x - lbl.Width * 0.5, padTop + plotH + 3));
+            bool showLabel = Math.Abs(f % labelStep) < 0.01 || Math.Abs(f - maxFreqHz) < 0.1;
+            if (showLabel)
+            {
+                var lbl = new FormattedText($"{f:0}", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, 9.5, mutedBrush);
+                double lx = Math.Clamp(x - lbl.Width * 0.5, padLeft, padLeft + plotW - lbl.Width);
+                context.DrawText(lbl, new Point(lx, padTop + plotH + 3));
+            }
         }
 
         // Active carrier frequency vertical marker

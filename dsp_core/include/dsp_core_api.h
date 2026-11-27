@@ -357,6 +357,20 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_uso_reset_adc(DspEngine* engine);
 /** Query live MCU diagnostic counters over V2 CMD_GET_DIAG and update runtime info. */
 DSPCORE_API int32_t DSPCORE_CALL dsp_uso_refresh_diag(DspEngine* engine);
 
+/**
+ * Copy recent continuous signed Sync Preamble (СП) correlation trace (-100..+100%)
+ * evaluated in real time on the resampled virtual grid.
+ * Returns number of trace points written into out_trace (0..max_count), or < 0 on error.
+ */
+DSPCORE_API int32_t DSPCORE_CALL dsp_get_sync_corr_trace(
+    DspEngine* engine,
+    int32_t* out_trace,
+    int32_t max_count,
+    int32_t* out_live_pct,
+    int32_t* out_locked_pct,
+    int32_t* out_lock_count
+);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,26 +1,119 @@
-# Track only Stage 1 (dsp_core/) and Stage 2 (ProvodkaNG/) files when syncing to GitHub
-*
-!/.gitignore
-!/dsp_core/
-!/dsp_core/.gitignore
-!/dsp_core/CMakeLists.txt
-!/dsp_core/Makefile
-!/dsp_core/README.md
-!/dsp_core/include/
-!/dsp_core/include/**
-!/dsp_core/src/
-!/dsp_core/src/**
-!/dsp_core/tests/
-!/dsp_core/tests/**
+# Track only dsp_core/, ProvodkaNG/, data/, and uso_emb/ when syncing to GitHub.
+# NOTE: Avoid global '*' / '/*' or unspecific '/src/', '/dist/', '/*.cpp', '/*.h'
+# because some GitHub sync .gitignore matchers strip leading '/' and ignore nested paths.
 
-!/ProvodkaNG/
-!/ProvodkaNG/**
+# Root AI Studio / web scaffold files & directories
+.aistudio/
+node_modules/
+bun.lock
+index.html
+metadata.json
+package.json
+tsconfig.json
+vite.config.ts
+*.ts
+*.tsx
+*.js
+*.css
+*.html
+dist/index.html
+dist/assets/
+src/components/
+src/data/
+src/engine/
+src/types/
 
-!/data/
-!/data/**
+# Legacy Borland C++Builder root directories
+tek/
+Для Горизонт*
+КнопкиПлеер/
+Полезности/
 
-!/uso_emb/
-!/uso_emb/**
+# Legacy Borland C++Builder root files (extensions absent from dsp_core/ProvodkaNG/data/uso_emb)
+*.bmp
+*.BMP
+*.bpr
+*.CPP
+*.ddp
+*.dfm
+*.DLL
+*.doc
+*.dsk
+*.dxf
+*.exe
+*.pas
+*.res
+*.RES
+*.tds
+
+# Legacy Borland C++Builder root .h / .hpp / .cpp / .dat / .ini / .txt files (exact names)
+ComPort.hpp
+DepthFromGti.h
+DrawOTK.h
+Edit_Ink.h
+format1_2k.h
+format2_2k.h
+format11_2k.h
+format12_2k.h
+format13_2k.h
+format30_2k.h
+format31_2k.h
+format_kadra.h
+help.txt
+KIH1.dat
+KIH1_8.dat
+KIH2.dat
+KIH2_4F.dat
+KIH3.dat
+KIH3_4F.dat
+KIH5.dat
+/KIH5_4F.dat
+!dsp_core/tests/fixtures/KIH5_4F.dat
+KIH7.dat
+KIH7_4F.dat
+KIH10.dat
+KIH10_4F.dat
+KIH16_4F.dat
+KORDAT2k.cpp
+las.ini
+Leusa_tcp.h
+LogServer.h
+LOG_structure.h
+LThread.cpp
+LThread.h
+mode_1.h
+mode_2.h
+mode_11.h
+mode_12.h
+mode_13.h
+mode_30.h
+mode_31.h
+my_typedef.h
+myUTime.h
+nastr2k_0.dat
+OnMyPost1.h
+OnMyPost2.h
+OnMyPost3.h
+OnMyPost4.h
+Pasport.h
+PB.h
+PBThread.cpp
+PBThread.h
+Player.h
+Prowodka2k_062.cpp
+servis_param.h
+shlumberger.witstbl.txt
+TRAEKT2k.cpp
+TRAEKT2k.h
+VEC_NUMS.h
+WitsClient.h
+WitsCodesMWD.h
+WitsServer.h
+write_LAS.h
+write_to_file.h
+YCO8_1.cpp
+YCO8_1.h
+zts.witstbl.txt
 
 # Exclude C++ build artifacts and compiled binaries
 dsp_core/build/
@@ -41,9 +134,8 @@ ProvodkaNG/.vs/
 ProvodkaNG/**/*.user
 
 # Exclude PlatformIO build cache and Python bytecode (keep uso_emb/dist/ binaries)
+.pio/
 uso_emb/.pio/
 uso_emb/**/__pycache__/
-
-
 uso_emb/.vs/
 uso_emb/build/

@@ -32,6 +32,7 @@ public interface IDspEngineClient : IDisposable
     DspStatusCode RecalibrateUso() => DspStatusCode.NotFound;
     DspStatusCode ResetUsoAdc() => DspStatusCode.NotFound;
     DspStatusCode RefreshUsoDiagnostics() => DspStatusCode.NotFound;
+    SyncCorrTraceSnapshot? GetSyncCorrTrace(int maxCount = 1024) => null;
 }
 
 /// <summary>
@@ -335,6 +336,40 @@ public sealed unsafe class DspEngineClient : IDspEngineClient
         {
             ThrowIfDisposed();
             return DspNativeMethods.UsoRefreshDiag(_handle);
+        }
+        finally
+        {
+            _handleLock.ExitReadLock();
+        }
+    }
+
+    public SyncCorrTraceSnapshot? GetSyncCorrTrace(int maxCount = 1024)
+    {
+        int cap = Math.Clamp(maxCount, 16, 2048);
+        _handleLock.EnterReadLock();
+        try
+        {
+            ThrowIfDisposed();
+            int[] buf = new int[cap];
+            fixed (int* ptr = buf)
+            {
+                int n = DspNativeMethods.GetSyncCorrTrace(
+                    _handle,
+                    ptr,
+                    cap,
+                    out int livePct,
+                    out int lockedPct,
+                    out int lockCount);
+                if (n < 0)
+                    return null;
+
+                int[] trace = n == cap ? buf : buf[..n];
+                return new SyncCorrTraceSnapshot(trace, livePct, lockedPct, lockCount);
+            }
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return null;
         }
         finally
         {

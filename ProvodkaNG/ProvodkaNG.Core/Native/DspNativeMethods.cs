@@ -158,4 +158,13 @@ public static unsafe class DspNativeMethods
 
     [DllImport(LibraryName, EntryPoint = "dsp_uso_refresh_diag", CallingConvention = CallingConvention.StdCall)]
     public static extern DspStatusCode UsoRefreshDiag(nint engine);
+
+    [DllImport(LibraryName, EntryPoint = "dsp_get_sync_corr_trace", CallingConvention = CallingConvention.StdCall)]
+    public static extern int GetSyncCorrTrace(
+        nint engine,
+        int* outTrace,
+        int maxCount,
+        out int outLivePct,
+        out int outLockedPct,
+        out int outLockCount);
 }

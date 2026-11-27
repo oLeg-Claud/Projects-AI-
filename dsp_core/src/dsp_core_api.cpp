@@ -71,6 +71,58 @@ struct DspEngine {
     int64_t  total_virtual_consumed{0};
     int64_t  last_sync_abs_pos{-1};
 
+    /* Continuous live Sync Preamble (СП) correlation trace (-100..+100%):
+     * 1024 buckets x 32 virtual samples = 32,768 virtual samples (~1.83 full frames visible on screen).
+     * Within each 32-sample bucket we evaluate every 4 samples and keep the signed max-abs peak so
+     * narrow 13-sample SP crests are NEVER attenuated or missed. */
+    static constexpr size_t  kSyncTraceCapacity   = 1024;
+    static constexpr int64_t kSyncTraceEvalStep   = 4;
+    static constexpr int32_t kSyncTraceEvalsPerPt = 8; /* 8 * 4 = 32 virtual samples per trace point */
+    int32_t  sync_trace_ring[kSyncTraceCapacity]{};
+    size_t   sync_trace_head{0};
+    size_t   sync_trace_count{0};
+    int64_t  sync_trace_next_abs{0};
+    int32_t  sync_bucket_evals{0};
+    int32_t  sync_bucket_peak{0};
+    int32_t  live_sync_corr_pct{0};
+    int32_t  last_locked_sync_corr_pct{0};
+    int32_t  sync_lock_count{0};
+
+    void push_sync_trace_point_locked(int32_t signed_pct) {
+        if (signed_pct > 100) signed_pct = 100;
+        if (signed_pct < -100) signed_pct = -100;
+        sync_trace_ring[sync_trace_head] = signed_pct;
+        sync_trace_head = (sync_trace_head + 1) % kSyncTraceCapacity;
+        if (sync_trace_count < kSyncTraceCapacity) {
+            sync_trace_count++;
+        }
+    }
+
+    void update_sync_trace_locked() {
+        if (virtual_buf.size() < static_cast<size_t>(DSP_SYNC_SAMPLES)) {
+            return;
+        }
+        const int64_t max_valid_abs =
+            total_virtual_consumed + static_cast<int64_t>(virtual_buf.size() - static_cast<size_t>(DSP_SYNC_SAMPLES));
+        if (sync_trace_next_abs < total_virtual_consumed) {
+            sync_trace_next_abs = total_virtual_consumed;
+        }
+        while (sync_trace_next_abs <= max_valid_abs) {
+            const size_t offset = static_cast<size_t>(sync_trace_next_abs - total_virtual_consumed);
+            const int32_t pct = correlator.correlate_sync_at(virtual_buf.data() + offset);
+            live_sync_corr_pct = pct;
+            if (std::abs(pct) >= std::abs(sync_bucket_peak)) {
+                sync_bucket_peak = pct;
+            }
+            if (++sync_bucket_evals >= kSyncTraceEvalsPerPt) {
+                push_sync_trace_point_locked(sync_bucket_peak);
+                sync_bucket_evals = 0;
+                sync_bucket_peak  = 0;
+            }
+            sync_trace_next_abs += kSyncTraceEvalStep;
+        }
+    }
+
     void rebuild_pipeline_locked() {
         correlator.set_codebook(cfg.ncod);
         decoder.configure(cfg);
@@ -89,6 +141,10 @@ struct DspEngine {
         next_vec_pos           = 0;
         total_virtual_consumed = 0;
         last_sync_abs_pos      = -1;
+        sync_trace_next_abs    = 0;
+        sync_bucket_evals      = 0;
+        sync_bucket_peak       = 0;
+        live_sync_corr_pct     = 0;
     }
 
     void discard_prefix(size_t n) {
@@ -157,6 +213,16 @@ struct DspEngine {
                     frame_number++;
                     frame_phase     = sync_res.phase_polarity;
                     phys_vec_cursor = 0;
+                    last_locked_sync_corr_pct = sync_res.reliability_pct;
+                    sync_lock_count++;
+                    {
+                        const int32_t signed_lock = (sync_res.phase_polarity >= 0)
+                            ? sync_res.reliability_pct
+                            : -sync_res.reliability_pct;
+                        if (std::abs(signed_lock) > std::abs(sync_bucket_peak)) {
+                            sync_bucket_peak = signed_lock;
+                        }
+                    }
 
                     decoder.begin_frame(
                         frame_number,
@@ -294,6 +360,7 @@ struct DspEngine {
             return;
         }
         resampler.push_filtered(filtered_scratch.data(), static_cast<size_t>(count), virtual_buf);
+        update_sync_trace_locked();
         process_virtual_buffer_locked(out_cb);
     }
 
@@ -805,6 +872,42 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_uso_refresh_diag(DspEngine* engine) {
     if (!engine->running.load() || !engine->source) return DSP_ERR_NOT_FOUND;
     engine->pending_diag = true;
     return DSP_OK;
+}
+
+DSPCORE_API int32_t DSPCORE_CALL dsp_get_sync_corr_trace(
+    DspEngine* engine,
+    int32_t* out_trace,
+    int32_t max_count,
+    int32_t* out_live_pct,
+    int32_t* out_locked_pct,
+    int32_t* out_lock_count
+) {
+    if (!engine) return DSP_ERR_INVALID_ARG;
+    std::lock_guard<std::mutex> lock(engine->mutex);
+
+    if (out_live_pct)   *out_live_pct   = engine->live_sync_corr_pct;
+    if (out_locked_pct) *out_locked_pct = engine->last_locked_sync_corr_pct;
+    if (out_lock_count) *out_lock_count = engine->sync_lock_count;
+
+    if (!out_trace || max_count <= 0 || (engine->sync_trace_count == 0 && engine->sync_bucket_evals == 0)) {
+        return 0;
+    }
+
+    const size_t has_partial = (engine->sync_bucket_evals > 0) ? 1u : 0u;
+    const size_t total = engine->sync_trace_count + has_partial;
+    const size_t copy_n = std::min<size_t>(total, static_cast<size_t>(max_count));
+    const size_t ring_copy = (has_partial && copy_n > 0) ? (copy_n - 1u) : copy_n;
+    const size_t oldest = (engine->sync_trace_head + DspEngine::kSyncTraceCapacity - engine->sync_trace_count)
+                          % DspEngine::kSyncTraceCapacity;
+    const size_t start = (oldest + (engine->sync_trace_count - ring_copy)) % DspEngine::kSyncTraceCapacity;
+
+    for (size_t i = 0; i < ring_copy; ++i) {
+        out_trace[i] = engine->sync_trace_ring[(start + i) % DspEngine::kSyncTraceCapacity];
+    }
+    if (has_partial && copy_n > 0) {
+        out_trace[ring_copy] = engine->sync_bucket_peak;
+    }
+    return static_cast<int32_t>(copy_n);
 }
 
 } /* extern "C" */

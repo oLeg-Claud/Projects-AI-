@@ -57,6 +57,7 @@
         <MenuItem Header="_Окна">
           <MenuItem Header="Осциллограф" Command="{Binding ActivatePanelCommand}" CommandParameter="OscilloscopeDoc" />
           <MenuItem Header="Спектр (БПФ)" Command="{Binding ActivatePanelCommand}" CommandParameter="SpectrumDoc" />
+          <MenuItem Header="Корреляция СП" Command="{Binding ActivatePanelCommand}" CommandParameter="SyncCorrelationDoc" />
           <MenuItem Header="Корреляция RM(1,4)" Command="{Binding ActivatePanelCommand}" CommandParameter="CorrelationDoc" />
           <MenuItem Header="Отклонитель (OTK)" Command="{Binding ActivatePanelCommand}" CommandParameter="ToolfaceTool" />
           <MenuItem Header="УСО32 и ЦОС" Command="{Binding ActivatePanelCommand}" CommandParameter="UsoControlTool" />

@@ -207,7 +207,7 @@ double simd_centered_energy_double(const double* a, size_t len, double mean) {
 /* ============================================================================
  * SoftCorrelator Implementation
  * ============================================================================ */
-SoftCorrelator::SoftCorrelator() : ncod_(0), sync_energy_(1.0) {
+SoftCorrelator::SoftCorrelator() : ncod_(0), sync_energy_(1.0), sync_tpl_sum_(0.0) {
     rebuild_templates();
 }
 
@@ -231,7 +231,8 @@ void SoftCorrelator::rebuild_templates() {
             }
         }
     }
-    sync_energy_ = simd_energy_double(sync_tpl_.data(), DSP_SYNC_SAMPLES);
+    sync_energy_  = simd_energy_double(sync_tpl_.data(), DSP_SYNC_SAMPLES);
+    sync_tpl_sum_ = simd_sum_double(sync_tpl_.data(), DSP_SYNC_SAMPLES);
 
     /* Expand 16 RM(1,4) orthogonal codewords (32 half-periods * 13 = 416 samples each) */
     for (int c = 0; c < DSP_RM14_CODES; ++c) {
@@ -265,7 +266,7 @@ SyncSearchResult SoftCorrelator::search_sync_preamble(
 
     /* Zero-mean (DC-immune) SIMD Pearson correlation over 1664 doubles:
      * immune to ADC DC bias even when HPF/corrector is off or still settling. */
-    const double tpl_sum = simd_sum_double(sync_tpl_.data(), DSP_SYNC_SAMPLES);
+    const double tpl_sum = sync_tpl_sum_;
     constexpr double inv_sync_n = 1.0 / static_cast<double>(DSP_SYNC_SAMPLES);
 
     for (size_t lag = 0; lag < num_lags; ++lag) {
@@ -295,6 +296,20 @@ SyncSearchResult SoftCorrelator::search_sync_preamble(
     res.peak_corr       = best_corr;
     res.found           = (pct >= dcp_threshold);
     return res;
+}
+
+int32_t SoftCorrelator::correlate_sync_at(const double* seg) const {
+    if (!seg) return 0;
+    constexpr double inv_sync_n = 1.0 / static_cast<double>(DSP_SYNC_SAMPLES);
+    const double mean = simd_sum_double(seg, DSP_SYNC_SAMPLES) * inv_sync_n;
+    const double xkv  = simd_centered_energy_double(seg, DSP_SYNC_SAMPLES, mean);
+    if (xkv <= 1e-18) return 0;
+    const double dot  = simd_dot_double(seg, sync_tpl_.data(), DSP_SYNC_SAMPLES) - mean * sync_tpl_sum_;
+    const double corr = dot / std::sqrt(sync_energy_ * xkv);
+    int32_t pct = static_cast<int32_t>(std::lround(corr * 100.0));
+    if (pct > 100) pct = 100;
+    if (pct < -100) pct = -100;
+    return pct;
 }
 
 VectorDecodeResult SoftCorrelator::decode_vector(
