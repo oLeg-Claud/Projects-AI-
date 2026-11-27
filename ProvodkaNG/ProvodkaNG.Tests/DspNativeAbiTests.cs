@@ -98,7 +98,11 @@ public sealed class DspNativeAbiTests
         ReadOnlySpan<byte> pkt24 = [0x00, 0x12, 0x34, 0x56, 0xFF];
         var (status24, sample24) = DspEngineClient.ParseLegacyPacket(pkt24, 24);
         Assert.Equal(DspStatusCode.Ok, status24);
-        Assert.Equal(0x12345600, sample24);
+        // ABI uses signed counts in the declared bit depth (same as the C++ parser).
+        Assert.Equal(0x123456, sample24);
+        var (negativeStatus, negative) = DspEngineClient.ParseLegacyPacket([0, 0xFF, 0xFF, 0xFF, 0xFF], 24);
+        Assert.Equal(DspStatusCode.Ok, negativeStatus);
+        Assert.Equal(-1, negative);
 
         // 32-bit uco32 packet with 0xFE overflow trailer
         ReadOnlySpan<byte> pkt32Overflow = [0x00, 0x01, 0x02, 0x03, 0x04, 0xFE];

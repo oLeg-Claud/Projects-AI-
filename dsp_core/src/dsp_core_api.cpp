@@ -276,6 +276,8 @@ struct DspEngine {
 
     void push_samples_locked(const double* samples, int32_t count, int32_t overflow_flag, PendingCallbacks& out_cb) {
         if (!samples || count <= 0) return;
+        // Never correlate across a transport gap or an invalid ADC block.
+        if (overflow_flag != 0) rebuild_pipeline_locked();
 
         filtered_scratch.resize(static_cast<size_t>(count));
         fir.process_block(samples, filtered_scratch.data(), static_cast<size_t>(count));
@@ -287,6 +289,10 @@ struct DspEngine {
             out_cb.has_signal    = true;
         }
 
+        if (overflow_flag & dsp::usov2::Receiver::Overflow) {
+            rebuild_pipeline_locked();
+            return;
+        }
         resampler.push_filtered(filtered_scratch.data(), static_cast<size_t>(count), virtual_buf);
         process_virtual_buffer_locked(out_cb);
     }
@@ -744,6 +750,7 @@ DSPCORE_API void DSPCORE_CALL dsp_uso_v2_options_default(DspUsoV2Options* opts) 
 
 DSPCORE_API int32_t DSPCORE_CALL dsp_set_uso_v2_options(DspEngine* engine, const DspUsoV2Options* opts) {
     if (!engine || !opts) return DSP_ERR_INVALID_ARG;
+    if (opts->chop_enabled) return DSP_ERR_INVALID_ARG;
     std::lock_guard<std::mutex> lock(engine->mutex);
     const bool changed = (std::memcmp(&engine->v2_opts, opts, sizeof(DspUsoV2Options)) != 0);
     engine->v2_opts = *opts;

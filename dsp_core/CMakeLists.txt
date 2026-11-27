@@ -64,4 +64,8 @@ if(DSPCORE_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
     add_test(NAME DspCoreUnitTests COMMAND test_dsp_core)
+    target_compile_definitions(test_dsp_core PRIVATE DSP_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    add_executable(test_v2_receiver tests/test_v2_receiver.cpp)
+    target_include_directories(test_v2_receiver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME V2ReceiverTests COMMAND test_v2_receiver)
 endif()

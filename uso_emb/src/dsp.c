@@ -94,6 +94,7 @@ bool uso_filter_init_ex(
 {
     if (!f || fs_hz < 10.0 || fs_hz > 40000.0) return false;
     if (decim_factor < 1u || decim_factor > 16u) return false;
+    if (lpf_mode == USO_V2_LPF_LEGACY10 && fabs(fs_hz - USO_SAMPLE_RATE_HZ) > 0.01) return false;
 
     memset(f, 0, sizeof(*f));
     f->fs_hz = fs_hz;

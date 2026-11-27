@@ -819,7 +819,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         string isa = _engine.SimdIsa;
         _dispatchToUi(() => SimdIsa = isa);
 
-        _engine.SetUsoV2Options(BuildUsoV2Options());
+        status = _engine.SetUsoV2Options(BuildUsoV2Options());
+        if (status != DspStatusCode.Ok) return false;
 
         _engine.ToolfaceReceived += OnToolfaceReceived;
         _engine.VectorDecoded += OnVectorDecoded;

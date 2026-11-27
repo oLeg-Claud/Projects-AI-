@@ -10,7 +10,7 @@
 #endif
 
 #define USO_FW_MAJOR 3u
-#define USO_FW_MINOR 0u
+#define USO_FW_MINOR 1u
 #define USO_FW_PATCH 0u
 
 /* Internal ADS1262 oscillator = 7.3728 MHz (override to 4608000u for Rev P external X1). */

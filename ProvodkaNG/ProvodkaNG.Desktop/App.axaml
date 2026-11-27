@@ -110,7 +110,8 @@
                 </ComboBox>
               </StackPanel>
 
-              <CheckBox Content="Чоппер ADS1262 (CHOP — дрейф нуля)" IsChecked="{Binding Main.ChopEnabled}" />
+              <CheckBox Content="CHOP — временно недоступен" IsEnabled="False" IsChecked="{Binding Main.ChopEnabled}"
+                        ToolTip.Tip="Требуется проверка частоты выдачи данных для каждого аппаратного фильтра." />
 
               <Button Content="Аппаратный сброс АЦП (Reset)"
                       Command="{Binding Main.ResetUsoAdcCommand}"

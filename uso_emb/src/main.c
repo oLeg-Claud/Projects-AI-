@@ -39,9 +39,10 @@ static uso_v2_batch_t     v2_batch;
 static uint16_t           v2_tx_seq;
 static uint32_t           v2_sample_idx;
 static bool               v2_gap_pending;
+static bool               v2_decim_overflow;
 static uint32_t           v2_batch_start_ms;
 
-static const uint8_t info[] = "\xa1" __DATE__ " " __TIME__ " USO32_App_v3.0_DualV2";
+static const uint8_t info[] = "\xa1" __DATE__ " " __TIME__ " USO32_App_v3.1_DualV2";
 
 void app_receive(const uint8_t *b, uint32_t n)
 {
@@ -141,14 +142,9 @@ static void send_v2_ack(uint16_t seq, uint8_t cmd_echo, uint8_t status)
     send_v2_response(USO_V2_RSP_ACK, seq, p, sizeof(p));
 }
 
-static void flush_v2_batch(uint32_t now_ms)
+static void flush_v2_batch(void)
 {
     if (v2_batch.sample_count == 0u) return;
-    v2_batch.timestamp_ms = now_ms;
-    if (v2_gap_pending) {
-        v2_batch.flags |= USO_V2_BATCH_GAP_DROPPED;
-        v2_gap_pending = false;
-    }
     uint8_t wire[USO_V2_MAX_FRAME];
     unsigned n = uso_v2_encode_batch(v2_tx_seq++, &v2_batch, wire);
     if (n > 0u) {
@@ -158,57 +154,21 @@ static void flush_v2_batch(uint32_t now_ms)
     v2_batch.flags = 0u;
 }
 
+static void mark_v2_gap(void)
+{
+    // Preserve the valid prefix, then start a new segment after the missing ADC data.
+    flush_v2_batch();
+    v2_gap_pending = true;
+    memset(filter.state, 0, sizeof(filter.state));
+    filter.hp_x = filter.hp_y = 0;
+    filter.decim_count = 0;
+    filter.decim_accum = 0;
+    v2_decim_overflow = false;
+}
+
 static bool resolve_v2_stream(const uso_v2_config_t *cfg, uso_v2_start_rsp_t *out)
 {
-    if (!cfg || !out) return false;
-    if (cfg->pga_gain > 5u || cfg->adc_filter > USO_V2_FLT_FIR || cfg->dsp_lpf_mode > USO_V2_LPF_LEGACY10) {
-        return false;
-    }
-
-    uint32_t clk_hz = ads_get_clock_hz();
-    bool chop = (cfg->adc_flags & USO_V2_ADC_FLAG_CHOP) != 0u;
-
-    uint8_t dr_code = cfg->dr_code;
-    uint8_t decim = cfg->decimation;
-    uint8_t batch = cfg->batch_size;
-    uint16_t eff_fs_dhz = 0u;
-
-    if (dr_code == USO_V2_DR_AUTO) {
-        uso_v2_select_adaptive_rate(
-            cfg->carrier_freq_mhz, clk_hz, chop, &dr_code, &decim, &batch, &eff_fs_dhz
-        );
-        if (cfg->decimation >= 1u && cfg->decimation <= 16u) decim = cfg->decimation;
-        if (cfg->batch_size >= 1u && cfg->batch_size <= USO_V2_MAX_BATCH_SAMPLES) batch = cfg->batch_size;
-    } else {
-        if (dr_code < USO_V2_DR_20 || dr_code > USO_V2_DR_4800) return false;
-        if (decim == 0u) decim = 1u;
-        if (decim > 16u) return false;
-    }
-
-    uint16_t hw_fs_dhz = uso_v2_dr_nominal_dhz(dr_code, clk_hz, chop);
-    if (hw_fs_dhz == 0u) return false;
-    eff_fs_dhz = (uint16_t)(hw_fs_dhz / decim);
-    if (eff_fs_dhz == 0u) return false;
-
-    if (batch == 0u || batch > USO_V2_MAX_BATCH_SAMPLES) {
-        uint32_t auto_b = ((uint32_t)eff_fs_dhz * 25u + 5000u) / 10000u;
-        if (auto_b < 1u) auto_b = 1u;
-        if (auto_b > USO_V2_MAX_BATCH_SAMPLES) auto_b = USO_V2_MAX_BATCH_SAMPLES;
-        batch = (uint8_t)auto_b;
-    }
-
-    out->status           = USO_V2_OK;
-    out->dr_code          = dr_code;
-    out->decimation       = decim;
-    out->batch_size       = batch;
-    out->pga_gain         = cfg->pga_gain;
-    out->adc_filter       = (cfg->adc_filter == USO_V2_FLT_FIR && dr_code > USO_V2_DR_20)
-                                ? USO_V2_FLT_SINC4 : cfg->adc_filter;
-    out->adc_flags        = cfg->adc_flags;
-    out->inpmux           = cfg->inpmux ? cfg->inpmux : USO_V2_MUX_AIN8_AIN9;
-    out->effective_fs_dhz = eff_fs_dhz;
-    out->hw_fs_dhz        = hw_fs_dhz;
-    return true;
+    return uso_v2_resolve_config(cfg, ads_get_clock_hz(), out);
 }
 
 static bool start_v2_acquisition(void)
@@ -249,8 +209,10 @@ static bool start_v2_acquisition(void)
     uso_stats.v2_mode = 1;
     v2_batch.sample_count = 0u;
     v2_batch.flags = 0u;
-    v2_sample_idx = 0u;
-    v2_gap_pending = false;
+    // Keep the output index monotonic across acquisition restarts. The first
+    // batch explicitly starts a new signal segment even if no index is skipped.
+    v2_gap_pending = true;
+    v2_decim_overflow = false;
 
     /* Scale ADC watchdog timeout with sample period so 20/50/60 SPS never spuriously trip. */
     uint32_t period_ms = (resolved.hw_fs_dhz > 0u) ? (10000u / resolved.hw_fs_dhz) : 10u;
@@ -267,9 +229,6 @@ static bool start_v2_acquisition(void)
 
 static void handle_v2(const uso_v2_frame_t *f)
 {
-    v2_mode = true;
-    uso_stats.v2_mode = 1;
-
     switch (f->msg_type) {
     case USO_V2_CMD_HELLO: {
         uso_v2_hello_rsp_t rsp;
@@ -284,7 +243,6 @@ static void handle_v2(const uso_v2_frame_t *f)
         rsp.fault         = uso_stats.fault;
         rsp.capabilities  = USO_V2_CAP_ADAPTIVE_RATE |
                             USO_V2_CAP_HW_FILTERS |
-                            USO_V2_CAP_CHOP |
                             USO_V2_CAP_RECALIBRATE |
                             USO_V2_CAP_SOFT_RESET_ADC |
                             USO_V2_CAP_DIAG_MUX |
@@ -321,21 +279,24 @@ static void handle_v2(const uso_v2_frame_t *f)
     }
 
     case USO_V2_CMD_START: {
-        if (!ready) {
-            uso_v2_start_rsp_t err;
-            memset(&err, 0, sizeof(err));
-            err.status = USO_V2_ERR_ADC_FAULT;
+        uso_v2_config_t next_cfg = v2_cfg;
+        uso_v2_start_rsp_t check;
+        uint8_t status = USO_V2_OK;
+        if (f->payload_len != 0u && f->payload_len != USO_V2_CFG_WIRE_LEN)
+            status = USO_V2_ERR_BAD_LEN;
+        else if (f->payload_len && !uso_v2_unpack_config(f->payload, f->payload_len, &next_cfg))
+            status = USO_V2_ERR_BAD_LEN;
+        else if (!resolve_v2_stream(&next_cfg, &check)) status = USO_V2_ERR_BAD_PARAM;
+        else if (!ready) status = USO_V2_ERR_ADC_FAULT;
+        if (status != USO_V2_OK) {
+            uso_v2_start_rsp_t err = {0};
+            err.status = status;
             uint8_t buf[USO_V2_START_RSP_WIRE_LEN];
             uso_v2_pack_start_rsp(&err, buf);
             send_v2_response(USO_V2_RSP_START, f->seq, buf, sizeof(buf));
             break;
         }
-        if (f->payload_len == USO_V2_CFG_WIRE_LEN) {
-            uso_v2_config_t next_cfg;
-            if (uso_v2_unpack_config(f->payload, f->payload_len, &next_cfg)) {
-                v2_cfg = next_cfg;
-            }
-        }
+        v2_cfg = next_cfg;
         if (!start_v2_acquisition()) {
             uso_v2_start_rsp_t err;
             memset(&err, 0, sizeof(err));
@@ -364,38 +325,39 @@ static void handle_v2(const uso_v2_frame_t *f)
             send_v2_ack(f->seq, f->msg_type, USO_V2_ERR_BAD_LEN);
             break;
         }
-        if ((live.mask & USO_V2_LIVE_MASK_GAIN) && live.pga_gain <= 5u) {
-            v2_cfg.pga_gain = live.pga_gain;
-            v2_active.pga_gain = live.pga_gain;
-            if (running && ready) {
-                board_adc_irq(false);
-                drdy_count = 0;
-                bool ok = ads_set_gain_live(live.pga_gain, (v2_cfg.adc_flags & USO_V2_ADC_FLAG_PGA_BYP) != 0u);
-                last_sample = HAL_GetTick();
-                if (ok) board_adc_irq(true);
-                else { fault(); send_v2_ack(f->seq, f->msg_type, USO_V2_ERR_ADC_FAULT); break; }
+        if (!running || !v2_mode) {
+            send_v2_ack(f->seq, f->msg_type, USO_V2_ERR_BUSY);
+            break;
+        }
+        if (!live.mask || (live.mask & ~0x0Fu) ||
+            ((live.mask & USO_V2_LIVE_MASK_GAIN) && live.pga_gain > 5u) ||
+            ((live.mask & USO_V2_LIVE_MASK_BATCH) && (!live.batch_size || live.batch_size > USO_V2_MAX_BATCH_SAMPLES))) {
+            send_v2_ack(f->seq, f->msg_type, USO_V2_ERR_BAD_PARAM);
+            break;
+        }
+        uso_v2_config_t next_cfg = v2_cfg;
+        if (live.mask & USO_V2_LIVE_MASK_GAIN) next_cfg.pga_gain = live.pga_gain;
+        if (live.mask & USO_V2_LIVE_MASK_HPF) next_cfg.dsp_hpf_cutoff_mhz = live.dsp_hpf_cutoff_mhz;
+        if (live.mask & USO_V2_LIVE_MASK_LPF) {
+            next_cfg.dsp_lpf_mode = live.dsp_lpf_mode;
+            next_cfg.dsp_lpf_cutoff_dhz = live.dsp_lpf_cutoff_dhz;
+        }
+        if (live.mask & USO_V2_LIVE_MASK_BATCH) next_cfg.batch_size = live.batch_size;
+        uso_v2_start_rsp_t check;
+        if (!resolve_v2_stream(&next_cfg, &check)) {
+            send_v2_ack(f->seq, f->msg_type, USO_V2_ERR_BAD_PARAM);
+            break;
+        }
+        v2_cfg = next_cfg;
+        if (live.mask & (USO_V2_LIVE_MASK_GAIN | USO_V2_LIVE_MASK_HPF | USO_V2_LIVE_MASK_LPF)) {
+            // An ADC/filter restart is a discontinuity, not a seamless update.
+            if (!start_v2_acquisition()) {
+                send_v2_ack(f->seq, f->msg_type, USO_V2_ERR_ADC_FAULT);
+                break;
             }
-        }
-        if (live.mask & USO_V2_LIVE_MASK_HPF) {
-            v2_cfg.dsp_hpf_cutoff_mhz = live.dsp_hpf_cutoff_mhz;
-            uso_filter_set_hp_cutoff(&filter, (double)live.dsp_hpf_cutoff_mhz * 0.001);
-        }
-        if ((live.mask & USO_V2_LIVE_MASK_LPF) && live.dsp_lpf_mode <= USO_V2_LPF_LEGACY10) {
-            v2_cfg.dsp_lpf_mode = live.dsp_lpf_mode;
-            v2_cfg.dsp_lpf_cutoff_dhz = live.dsp_lpf_cutoff_dhz;
-            if (running) {
-                double hw_fs = (double)v2_active.hw_fs_dhz * 0.1;
-                double lpf_hz = (v2_cfg.dsp_lpf_cutoff_dhz > 0u)
-                                    ? ((double)v2_cfg.dsp_lpf_cutoff_dhz * 0.1)
-                                    : ((double)v2_cfg.carrier_freq_mhz * 0.0025);
-                double hpf_hz = (double)v2_cfg.dsp_hpf_cutoff_mhz * 0.001;
-                (void)uso_filter_init_ex(&filter, hw_fs, v2_cfg.dsp_lpf_mode, lpf_hz, hpf_hz, v2_active.decimation);
-            }
-        }
-        if ((live.mask & USO_V2_LIVE_MASK_BATCH) &&
-            live.batch_size >= 1u && live.batch_size <= USO_V2_MAX_BATCH_SAMPLES) {
-            v2_cfg.batch_size = live.batch_size;
-            v2_active.batch_size = live.batch_size;
+        } else {
+            flush_v2_batch();
+            v2_active.batch_size = check.batch_size;
         }
         send_v2_ack(f->seq, f->msg_type, USO_V2_OK);
         break;
@@ -412,7 +374,7 @@ static void handle_v2(const uso_v2_frame_t *f)
         diag.stale_count      = uso_stats.stale;
         diag.tx_overflows     = uso_stats.tx_overflows;
         diag.rx_overflows     = uso_stats.rx_overflows;
-        diag.v2_crc_errors    = uso_stats.v2_crc_errors + v2_parser.crc_errors;
+        diag.v2_crc_errors    = v2_parser.crc_errors;
         diag.effective_fs_dhz = running ? (v2_mode ? v2_active.effective_fs_dhz : (uint16_t)(USO_SAMPLE_RATE_HZ * 10u)) : 0u;
         diag.adc_status       = uso_stats.adc_status;
         diag.state_flags      = (uint8_t)((ready ? 1u : 0u) |
@@ -442,7 +404,11 @@ static void handle_v2(const uso_v2_frame_t *f)
             send_v2_response(USO_V2_RSP_CAL, f->seq, &err, 1u);
             break;
         }
-        if (was_running) (void)start_v2_acquisition();
+        if (was_running && !start_v2_acquisition()) {
+            uint8_t err = USO_V2_ERR_ADC_FAULT;
+            send_v2_response(USO_V2_RSP_CAL, f->seq, &err, 1u);
+            break;
+        }
         uint8_t payload[25];
         payload[0] = USO_V2_OK;
         for (unsigned g = 0; g < 6u; ++g) {
@@ -612,7 +578,7 @@ int main(void)
                 uso_stats.missed_drdy += pending - 1u;
                 if (v2_mode && (v2_cfg.stream_flags & USO_V2_STREAM_AUTO_RECOVER)) {
                     uso_stats.dropped_samples += pending - 1u;
-                    v2_gap_pending = true;
+                    mark_v2_gap();
                 } else {
                     fault();
                     pending = 0u;
@@ -634,24 +600,28 @@ int main(void)
                     if (v2_mode) {
                         int32_t out_s = 0;
                         bool clipped = false;
+                        v2_decim_overflow = v2_decim_overflow || pga_ovf;
                         if (uso_filter_step_ex(&filter, sample, &out_s, &clipped)) {
                             if (v2_batch.sample_count == 0u) {
                                 v2_batch.first_sample_idx = v2_sample_idx;
                                 v2_batch.effective_fs_dhz = v2_active.effective_fs_dhz;
                                 v2_batch.pga_gain = v2_active.pga_gain;
-                                v2_batch.flags = 0u;
+                                v2_batch.flags = v2_gap_pending ? USO_V2_BATCH_GAP_DROPPED : 0u;
+                                v2_gap_pending = false;
                                 if (filter.hp) v2_batch.flags |= USO_V2_BATCH_HPF_ACTIVE;
                                 if (filter.sos_count > 0u) v2_batch.flags |= USO_V2_BATCH_LPF_ACTIVE;
                                 if (v2_active.adc_flags & USO_V2_ADC_FLAG_CHOP) v2_batch.flags |= USO_V2_BATCH_CHOP_ACTIVE;
                                 v2_batch_start_ms = ts;
                             }
-                            if (pga_ovf || clipped) {
+                            if (v2_decim_overflow || clipped) {
                                 v2_batch.flags |= USO_V2_BATCH_PGA_OVF;
                             }
+                            v2_decim_overflow = false;
+                            v2_batch.timestamp_ms = ts; // time of last sample, not USB flush
                             v2_batch.samples[v2_batch.sample_count++] = out_s;
                             ++v2_sample_idx;
                             if (v2_batch.sample_count >= v2_active.batch_size) {
-                                flush_v2_batch(ts);
+                                flush_v2_batch();
                             }
                         }
                     } else {
@@ -667,8 +637,7 @@ int main(void)
                     else ++uso_stats.adc_errors;
 
                     if (v2_mode && result != ADS_ALARM && (v2_cfg.stream_flags & USO_V2_STREAM_AUTO_RECOVER)) {
-                        v2_batch.flags |= USO_V2_BATCH_ADC_ALARM;
-                        v2_gap_pending = true;
+                        mark_v2_gap();
                         ++uso_stats.dropped_samples;
                     } else {
                         fault();
@@ -682,7 +651,7 @@ int main(void)
             /* Bound V2 batch latency (flush partial batch if > 40 ms elapsed) */
             if (v2_mode && v2_batch.sample_count > 0u &&
                 (uint32_t)(HAL_GetTick() - v2_batch_start_ms) >= 40u) {
-                flush_v2_batch(HAL_GetTick());
+                flush_v2_batch();
             }
         }
 

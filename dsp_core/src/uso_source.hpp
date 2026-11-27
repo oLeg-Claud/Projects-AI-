@@ -9,6 +9,7 @@
 #include <atomic>
 #include "../include/dsp_core_api.h"
 #include "uso_proto_v2.hpp"
+#include "uso_v2_receiver.hpp"
 
 namespace dsp {
 
@@ -102,17 +103,14 @@ private:
     int32_t  bit_mode_;
     int32_t  gain_index_;
     bool     synced_;
+    uint8_t  legacy_freq_byte_{2};
 
     /* Dual-mode V2 state */
     bool               v2_active_;
     DspUsoV2Options    v2_opts_;
     DspUsoRuntimeInfo  runtime_info_;
-    usov2::StreamParser v2_parser_;
+    usov2::Receiver     v2_receiver_;
     uint16_t           v2_seq_;
-    bool               v2_have_sample_idx_;
-    uint32_t           v2_expected_sample_idx_;
-    std::deque<double> v2_sample_queue_;
-    bool               v2_pending_overflow_;
 };
 
 /**

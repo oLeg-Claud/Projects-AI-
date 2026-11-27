@@ -449,10 +449,7 @@ LegacySerialUsoSource::LegacySerialUsoSource()
       gain_index_(0),
       synced_(false),
       v2_active_(false),
-      v2_seq_(1u),
-      v2_have_sample_idx_(false),
-      v2_expected_sample_idx_(0u),
-      v2_pending_overflow_(false)
+      v2_seq_(1u)
 {
     dsp_uso_v2_options_default(&v2_opts_);
     std::memset(&runtime_info_, 0, sizeof(runtime_info_));
@@ -541,30 +538,28 @@ bool LegacySerialUsoSource::send_v2_cmd(
 }
 
 bool LegacySerialUsoSource::wait_v2_response(
-    uint8_t expected_msg_type,
-    uint16_t expected_seq,
-    usov2::Frame& out_frame,
-    int32_t timeout_ms
+    uint8_t expected_msg_type, uint16_t expected_seq,
+    usov2::Frame& out_frame, int32_t timeout_ms
 ) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-    uint8_t buf[64]{};
-    while (std::chrono::steady_clock::now() < deadline) {
-        int32_t got = serial_read_bytes(handle_, buf, sizeof(buf), 50);
-        if (got <= 0) continue;
-        for (int32_t i = 0; i < got; ++i) {
-            int r = v2_parser_.feed(buf[i], out_frame);
-            if (r == 1) {
-                if (out_frame.msg_type == expected_msg_type &&
-                    (expected_seq == 0u || out_frame.seq == expected_seq)) {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
+    uint8_t buf[128]{};
+    do {
+        if (v2_receiver_.take_response(expected_msg_type, expected_seq, out_frame)) return true;
+        const int32_t got = serial_read_bytes(handle_, buf, sizeof(buf), 50);
+        if (got > 0) v2_receiver_.feed(buf, static_cast<size_t>(got));
+    } while (std::chrono::steady_clock::now() < deadline);
+    return v2_receiver_.take_response(expected_msg_type, expected_seq, out_frame);
 }
 
 bool LegacySerialUsoSource::start_v2_stream(const DspConfig& cfg) {
+    // Finish the previous session before discarding its queued samples.
+    uint16_t stop_seq = 0;
+    usov2::Frame stopped{};
+    if (!send_v2_cmd(usov2::CMD_STOP, nullptr, 0, &stop_seq) ||
+        !wait_v2_response(usov2::RSP_ACK, stop_seq, stopped, 500) ||
+        stopped.payload_len != 2 || stopped.payload[0] != usov2::CMD_STOP ||
+        stopped.payload[1] != usov2::ST_OK) return false;
+    v2_receiver_.reset();
     /* Assemble V2 configuration combining DspConfig + DspUsoV2Options */
     usov2::WireConfig wcfg{};
     double f_mhz = std::round(std::max(0.5, cfg.carrier_freq_hz) * 1000.0);
@@ -619,15 +614,11 @@ bool LegacySerialUsoSource::start_v2_stream(const DspConfig& cfg) {
     runtime_info_.hw_sample_rate_hz     = static_cast<double>(srsp.hw_fs_dhz) * 0.1;
 
     v2_active_              = true;
-    v2_have_sample_idx_     = false;
-    v2_expected_sample_idx_ = 0u;
-    v2_pending_overflow_    = false;
-    v2_sample_queue_.clear();
     return true;
 }
 
 bool LegacySerialUsoSource::try_open_v2(const DspConfig& cfg) {
-    v2_parser_.reset();
+    v2_receiver_.reset();
     usov2::HelloRsp hello{};
 
     auto do_hello = [&]() -> bool {
@@ -643,7 +634,7 @@ bool LegacySerialUsoSource::try_open_v2(const DspConfig& cfg) {
         (void)send_v2_cmd(usov2::CMD_STOP, nullptr, 0u);
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
         purge_serial_handle(handle_);
-        v2_parser_.reset();
+        v2_receiver_.reset();
         if (!do_hello()) {
             return false;
         }
@@ -691,25 +682,28 @@ int32_t LegacySerialUsoSource::open(const DspConfig& cfg) {
         return DSP_OK;
     }
 
-    /* Legacy fallback: probe optional 0xA1 INFO to distinguish 400 Hz STM32 v2.x from 250 Hz legacy USO */
-    double legacy_fs = 250.0;
-    purge_serial_handle(handle_);
-    if (write_byte(0xA1)) {
-        uint8_t info_buf[96]{};
-        int32_t info_n = serial_read_bytes(handle_, info_buf, sizeof(info_buf) - 1, 35);
-        if (info_n > 4 && info_buf[0] == 0xA1) {
-            info_buf[info_n] = 0;
-            const char* text = reinterpret_cast<const char*>(info_buf + 1);
-            if (std::strstr(text, "400Hz") != nullptr || std::strstr(text, "400hz") != nullptr) {
-                legacy_fs = 400.0;
-            }
-        }
+    if (runtime_info_.protocol_version == 2) {
+        // A recognized V2 device rejecting configuration is not a legacy device.
+        close();
+        return DSP_ERR_INVALID_ARG;
     }
 
-    /* Legacy initialization sequence (YCO8_1.cpp lines 67-99, uco32) */
+    /* Legacy fallback initialization sequence (YCO8_1.cpp lines 67-99, uco32) */
+    purge_serial_handle(handle_);
+    // The v2.2 prototype speaks legacy framing but samples at 400 Hz.
+    // Only use that rate when its explicit INFO signature confirms the firmware.
+    double legacy_fs = cfg.sample_rate_hz > 1.0 ? cfg.sample_rate_hz : 250.0;
+    if (write_byte(0xA1)) {
+        uint8_t info[128]{};
+        const int got = serial_read_bytes(handle_, info, sizeof(info), 150);
+        const std::string text(reinterpret_cast<const char*>(info), got > 0 ? got : 0);
+        if (text.find("USO32_App_v2") != std::string::npos && text.find("400Hz") != std::string::npos)
+            legacy_fs = 400.0;
+    }
     purge_serial_handle(handle_);
     const uint8_t gain_cmd = legacy_gain_command_byte(cfg.gain_index, bit_mode_);
     const uint8_t freq_cmd = legacy_freq_command_byte(cfg.carrier_freq_hz);
+    legacy_freq_byte_ = freq_cmd;
     const uint8_t corr_cmd = cfg.corrector_enabled ? 0x71 : 0x72;
 
     if (!write_byte(gain_cmd)) { close(); return DSP_ERR_PORT_OPEN; }
@@ -730,12 +724,6 @@ int32_t LegacySerialUsoSource::reconfigure(const DspConfig& cfg) {
     gain_index_ = std::clamp(cfg.gain_index, 0, 5);
 
     if (v2_active_) {
-        /* Fast V2 live restart on the already-open handle (~25 ms, zero COM rescan) */
-        (void)send_v2_cmd(usov2::CMD_STOP, nullptr, 0u);
-        std::this_thread::sleep_for(std::chrono::milliseconds(15));
-        purge_serial_handle(handle_);
-        v2_parser_.reset();
-        v2_sample_queue_.clear();
         return start_v2_stream(cfg) ? DSP_OK : DSP_ERR_PORT_OPEN;
     }
 
@@ -747,6 +735,7 @@ int32_t LegacySerialUsoSource::reconfigure(const DspConfig& cfg) {
 
     const uint8_t gain_cmd = legacy_gain_command_byte(cfg.gain_index, bit_mode_);
     const uint8_t freq_cmd = legacy_freq_command_byte(cfg.carrier_freq_hz);
+    legacy_freq_byte_ = freq_cmd;
     const uint8_t corr_cmd = cfg.corrector_enabled ? 0x71 : 0x72;
 
     if (!write_byte(gain_cmd)) return DSP_ERR_PORT_OPEN;
@@ -769,7 +758,7 @@ void LegacySerialUsoSource::close() {
     }
     synced_ = false;
     v2_active_ = false;
-    v2_sample_queue_.clear();
+    v2_receiver_.reset();
 }
 
 bool LegacySerialUsoSource::is_open() const {
@@ -786,7 +775,9 @@ void LegacySerialUsoSource::set_v2_options(const DspUsoV2Options& opts) {
 
 void LegacySerialUsoSource::get_runtime_info(DspUsoRuntimeInfo& out) const {
     out = runtime_info_;
-    out.crc_errors = runtime_info_.crc_errors + v2_parser_.crc_errors();
+    out.crc_errors = runtime_info_.crc_errors + v2_receiver_.crc_errors();
+    if (v2_active_) out.rx_packets = v2_receiver_.packets();
+    out.dropped_samples = std::max(out.dropped_samples, v2_receiver_.dropped_samples());
 }
 
 int32_t LegacySerialUsoSource::recalibrate() {
@@ -855,69 +846,18 @@ bool LegacySerialUsoSource::resync_stream() {
 }
 
 int32_t LegacySerialUsoSource::read_samples_v2(
-    double* out_samples,
-    int32_t max_samples,
-    int32_t* out_overflow
+    double* out_samples, int32_t max_samples, int32_t* out_overflow
 ) {
-    int32_t count = 0;
-    if (out_overflow) *out_overflow = 0;
-
-    auto drain_queue = [&]() {
-        while (count < max_samples && !v2_sample_queue_.empty()) {
-            out_samples[count++] = v2_sample_queue_.front();
-            v2_sample_queue_.pop_front();
-        }
-        if (v2_pending_overflow_ && count > 0) {
-            if (out_overflow) *out_overflow = 1;
-            v2_pending_overflow_ = false;
-        }
+    auto drain = [&]() {
+        return v2_receiver_.read(out_samples, max_samples, out_overflow,
+                                 &runtime_info_.active_sample_rate_hz);
     };
-
-    drain_queue();
-    if (count >= max_samples) return count;
-
+    int count = drain();
+    if (count > 0) return count;
     uint8_t raw[128]{};
-    int32_t got = serial_read_bytes(handle_, raw, sizeof(raw), 25);
-    if (got <= 0) return count;
-
-    usov2::Frame frame{};
-    for (int32_t i = 0; i < got; ++i) {
-        int r = v2_parser_.feed(raw[i], frame);
-        if (r != 1) continue;
-
-        if (frame.msg_type == usov2::MSG_DATA_BATCH) {
-            usov2::DataBatch batch{};
-            if (usov2::unpack_batch(frame.payload, frame.payload_len, batch)) {
-                runtime_info_.rx_packets++;
-                if (v2_have_sample_idx_ && batch.first_sample_idx > v2_expected_sample_idx_) {
-                    runtime_info_.dropped_samples += (batch.first_sample_idx - v2_expected_sample_idx_);
-                }
-                v2_have_sample_idx_ = true;
-                v2_expected_sample_idx_ = batch.first_sample_idx + batch.sample_count;
-
-                if (batch.flags & usov2::kBatchPgaOvf) {
-                    v2_pending_overflow_ = true;
-                }
-                if (batch.effective_fs_dhz > 0u) {
-                    runtime_info_.active_sample_rate_hz = static_cast<double>(batch.effective_fs_dhz) * 0.1;
-                }
-                for (uint8_t k = 0; k < batch.sample_count; ++k) {
-                    v2_sample_queue_.push_back(static_cast<double>(batch.samples[k]));
-                }
-            }
-        } else if (frame.msg_type == usov2::RSP_DIAG) {
-            usov2::DiagRsp d{};
-            if (usov2::unpack_diag_rsp(frame.payload, frame.payload_len, d)) {
-                runtime_info_.missed_drdy  = d.missed_drdy;
-                runtime_info_.tx_overflows = d.tx_overflows;
-                runtime_info_.adc_status   = static_cast<int32_t>(d.adc_status);
-                runtime_info_.hw_fault     = (d.state_flags & 4u) ? 1 : 0;
-            }
-        }
-    }
-
-    drain_queue();
-    return count;
+    const int32_t got = serial_read_bytes(handle_, raw, sizeof(raw), 60);
+    if (got > 0) v2_receiver_.feed(raw, static_cast<size_t>(got));
+    return drain();
 }
 
 int32_t LegacySerialUsoSource::read_samples(
@@ -972,9 +912,16 @@ int32_t LegacySerialUsoSource::set_gain(int32_t gain_index) {
     if (v2_active_) {
         uint8_t live[usov2::kLiveWireLen]{};
         usov2::pack_live(usov2::kLiveMaskGain, static_cast<uint8_t>(gain_index_), 0u, 0u, 0u, 0u, live);
-        return send_v2_cmd(usov2::CMD_SET_LIVE, live, sizeof(live)) ? DSP_OK : DSP_ERR_PORT_OPEN;
+        uint16_t seq = 0;
+        usov2::Frame reply{};
+        if (!send_v2_cmd(usov2::CMD_SET_LIVE, live, sizeof(live), &seq) ||
+            !wait_v2_response(usov2::RSP_ACK, seq, reply, 500)) return DSP_ERR_PORT_OPEN;
+        return reply.payload_len == 2 && reply.payload[0] == usov2::CMD_SET_LIVE &&
+               reply.payload[1] == usov2::ST_OK ? DSP_OK : DSP_ERR_INVALID_ARG;
     }
-    return write_byte(legacy_gain_command_byte(gain_index_, bit_mode_)) ? DSP_OK : DSP_ERR_PORT_OPEN;
+    // Legacy START/gain is a two-byte command; retain the active filter byte.
+    const uint8_t command[] = {legacy_gain_command_byte(gain_index_, bit_mode_), legacy_freq_byte_};
+    return write_bytes(command, sizeof(command)) ? DSP_OK : DSP_ERR_PORT_OPEN;
 }
 
 int32_t LegacySerialUsoSource::set_corrector(bool enabled) {
@@ -984,7 +931,12 @@ int32_t LegacySerialUsoSource::set_corrector(bool enabled) {
         uint16_t hpf_mhz = static_cast<uint16_t>(std::min(65000.0, std::round(hpf_hz * 1000.0)));
         uint8_t live[usov2::kLiveWireLen]{};
         usov2::pack_live(usov2::kLiveMaskHpf, 0u, 0u, 0u, 0u, hpf_mhz, live);
-        return send_v2_cmd(usov2::CMD_SET_LIVE, live, sizeof(live)) ? DSP_OK : DSP_ERR_PORT_OPEN;
+        uint16_t seq = 0;
+        usov2::Frame reply{};
+        if (!send_v2_cmd(usov2::CMD_SET_LIVE, live, sizeof(live), &seq) ||
+            !wait_v2_response(usov2::RSP_ACK, seq, reply, 500)) return DSP_ERR_PORT_OPEN;
+        return reply.payload_len == 2 && reply.payload[0] == usov2::CMD_SET_LIVE &&
+               reply.payload[1] == usov2::ST_OK ? DSP_OK : DSP_ERR_INVALID_ARG;
     }
     return write_byte(enabled ? 0x71 : 0x72) ? DSP_OK : DSP_ERR_PORT_OPEN;
 }

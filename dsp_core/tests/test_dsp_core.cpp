@@ -1,4 +1,7 @@
 #include "../include/dsp_core_api.h"
+#ifndef DSP_TEST_FIXTURES
+#define DSP_TEST_FIXTURES "tests/fixtures"
+#endif
 #include "../src/dsp_internal.hpp"
 #include "../src/uso_proto_v2.hpp"
 
@@ -253,7 +256,7 @@ void test_real_legacy_kih_fir_file() {
 
     DspEngine* eng = dsp_create(&cfg, &cbs);
     CHECK(eng != nullptr);
-    const int32_t taps = dsp_load_fir_file(eng, "../KIH5_4F.dat");
+    const int32_t taps = dsp_load_fir_file(eng, DSP_TEST_FIXTURES "/KIH5_4F.dat");
     CHECK(taps == 3887);
 
     std::vector<double> impulse(32, 0.0);
@@ -371,11 +374,7 @@ void test_geomash_crc32_format30() {
 
 /* Test 7: Real legacy .smp binary recording playback via SmpFilePlayerSource + C ABI */
 void test_real_smp_file_player() {
-    const char* candidates[] = {
-        "C:\\Projects\\AI\\TelesystemAiStudio\\dsp_core\\out\\build\\26-06-26 09-23-41.smp",
-        "../tek/smp/26-06-26 15-44-56.smp",
-        "tek/smp/26-06-26 15-44-56.smp"
-    };
+    const char* candidates[] = { DSP_TEST_FIXTURES "/legacy.smp" };
     const char* smp_path = nullptr;
     for (const char* p : candidates) {
         if (FILE* f = std::fopen(p, "rb")) {
@@ -552,7 +551,7 @@ void test_real_downhole_smp_sp_and_nonblocking_configure() {
         cfg.ncod            = 0;
         cfg.dcp_threshold   = 55;
         cfg.playback_speed  = 0; /* MAX speed */
-        std::snprintf(cfg.port_or_path, sizeof(cfg.port_or_path), "../tek/smp/24-08-23 10-35-20.smp");
+        std::snprintf(cfg.port_or_path, sizeof(cfg.port_or_path), DSP_TEST_FIXTURES "/downhole_16hz.smp");
 
         struct RealCap {
             int frames = 0;

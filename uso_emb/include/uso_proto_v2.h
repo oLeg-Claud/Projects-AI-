@@ -261,6 +261,8 @@ typedef enum {
 /* Pure portable protocol functions */
 uint16_t uso_v2_crc16(const uint8_t *data, size_t len);
 void     uso_v2_default_config(uso_v2_config_t *cfg);
+bool uso_v2_resolve_config(const uso_v2_config_t *cfg, uint32_t clk_hz, uso_v2_start_rsp_t *out);
+
 uint16_t uso_v2_dr_nominal_dhz(uint8_t dr_code, uint32_t adc_clock_hz, bool chop_enabled);
 void     uso_v2_select_adaptive_rate(
     uint16_t carrier_freq_mhz,

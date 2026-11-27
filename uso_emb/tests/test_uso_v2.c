@@ -169,6 +169,25 @@ static void test_v2_batch_streaming_packing(void)
 
 static void test_adaptive_sample_rate_selection(void)
 {
+    uso_v2_config_t cfg;
+    uso_v2_start_rsp_t resolved;
+    uso_v2_default_config(&cfg);
+    assert(uso_v2_resolve_config(&cfg, 7372800u, &resolved));
+    assert(resolved.hw_fs_dhz == 4000u && resolved.effective_fs_dhz == 2000u);
+    cfg.adc_flags |= USO_V2_ADC_FLAG_CHOP;
+    assert(!uso_v2_resolve_config(&cfg, 7372800u, &resolved));
+    uso_v2_default_config(&cfg);
+    cfg.decimation = 17;
+    assert(!uso_v2_resolve_config(&cfg, 7372800u, &resolved));
+    cfg.decimation = 0; cfg.reserved = 1;
+    assert(!uso_v2_resolve_config(&cfg, 7372800u, &resolved));
+    cfg.reserved = 0; cfg.batch_size = 11;
+    assert(!uso_v2_resolve_config(&cfg, 7372800u, &resolved));
+    cfg.batch_size = 0; cfg.dsp_lpf_mode = USO_V2_LPF_LEGACY10;
+    assert(!uso_v2_resolve_config(&cfg, 4608000u, &resolved));
+    assert(uso_v2_resolve_config(&cfg, 7372800u, &resolved));
+    assert(uso_v2_dr_nominal_dhz(USO_V2_DR_400, 7372800u, true) == 0u);
+    assert(uso_v2_dr_nominal_dhz(USO_V2_DR_400, 7372800u, false) == 4000u);
     uint8_t dr = 0, dec = 0, batch = 0;
     uint16_t fs_dhz = 0;
 
@@ -206,14 +225,21 @@ static void test_ads_decode_pga_vs_fatal_alarm(void)
     assert(ads_decode(ok_pkt, &val, &status) == ADS_OK && val == 0x01020304);
     assert(ads_decode_ex(ok_pkt, &val, &status, &ovf) == ADS_OK && !ovf && val == 0x01020304);
 
-    /* PGA differential overrange (bit 4 = 0x10): legacy rejects ALARM, V2 keeps streaming & sets ovf=true */
-    uint8_t pga_pkt[6] = { 0x50, 0x70, 0x00, 0x00, 0x00, (uint8_t)(0x9B + 0x70) };
-    assert(ads_decode(pga_pkt, &val, &status) == ADS_ALARM);
-    assert(ads_decode_ex(pga_pkt, &val, &status, &ovf) == ADS_OK && ovf);
-
-    /* Hard REF_ALM (bit 1 = 0x02): BOTH legacy and V2 reject as ADS_ALARM */
-    uint8_t ref_pkt[6] = { 0x42, 0x00, 0x00, 0x00, 0x01, (uint8_t)(0x9B + 1) };
-    assert(ads_decode_ex(ref_pkt, &val, &status, &ovf) == ADS_ALARM);
+    /* Exercise every STATUS bit independently against TI Table 9-18. */
+    for (unsigned bit = 0; bit < 6; ++bit) {
+        uint8_t packet[6] = { (uint8_t)(0x40u | (1u << bit)), 0, 0, 0, 1, 0x9C };
+        ads_result_t result = ads_decode_ex(packet, &val, &status, &ovf);
+        if (bit == 0 || bit == 4) {
+            assert(result == ADS_ALARM); /* RESET or REF_ALM */
+        } else {
+            assert(result == ADS_OK && val == 1);
+            assert(ovf == (bit >= 1 && bit <= 3));
+        }
+    }
+    uint8_t stale_pkt[6] = {0, 0, 0, 0, 1, 0x9C};
+    assert(ads_decode_ex(stale_pkt, &val, &status, &ovf) == ADS_STALE);
+    stale_pkt[0] = 0x40; stale_pkt[5] ^= 1;
+    assert(ads_decode_ex(stale_pkt, &val, &status, &ovf) == ADS_CHECKSUM);
 
     printf("[PASS] test_ads_decode_pga_vs_fatal_alarm\n");
 }

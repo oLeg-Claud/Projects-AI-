@@ -44,3 +44,6 @@ ProvodkaNG/**/*.user
 uso_emb/.pio/
 uso_emb/**/__pycache__/
 
+
+uso_emb/.vs/
+uso_emb/build/

@@ -97,6 +97,20 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public void LiveSettings_KeepNegotiatedSampleRate()
+    {
+        var fake = new FakeDspEngine();
+        using var vm = new MainWindowViewModel(
+            engineFactory: _ => fake, uiDispatcher: a => a(),
+            usoScanner: () => new UsoProbeResult(string.Empty, false, 0, DspStatusCode.NotFound),
+            autoStart: false);
+        // File settings must remain independent of the UI's last live Fs.
+        vm.ActiveSampleRateHz = 400;
+        Assert.Equal(400, vm.BuildSettings(DspSourceType.LegacySerial, "COM10").SampleRateHz);
+        Assert.Equal(250, vm.BuildSettings(DspSourceType.FilePlayer, "test.smp").SampleRateHz);
+    }
+
+    [Fact]
     public void ToggleShiftTheme_SwitchesDayAndNightLabels()
     {
         using var vm = new MainWindowViewModel(

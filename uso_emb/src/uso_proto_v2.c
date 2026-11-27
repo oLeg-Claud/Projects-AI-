@@ -66,6 +66,9 @@ void uso_v2_default_config(uso_v2_config_t *cfg)
 
 uint16_t uso_v2_dr_nominal_dhz(uint8_t dr_code, uint32_t adc_clock_hz, bool chop_enabled)
 {
+    /* CHOP timing depends on filter settling, not just DR. Until that timing
+     * is implemented and measured, reject it instead of reporting a false Fs. */
+    if (chop_enabled) return 0u;
     /* Nominal ADS1262 data rates in 0.1 Hz units at fCLK = 7.3728 MHz (TI SBAS661C Table 9-12) */
     uint32_t base_dhz = 0u;
     switch (dr_code) {
@@ -85,10 +88,6 @@ uint16_t uso_v2_dr_nominal_dhz(uint8_t dr_code, uint32_t adc_clock_hz, bool chop
     /* Scale proportionally to actual ADC clock (e.g. 4.608 MHz -> 0.625x -> 400 SPS becomes 250.0 SPS) */
     uint64_t scaled = ((uint64_t)base_dhz * (uint64_t)adc_clock_hz + 3686400ull) / 7372800ull;
 
-    /* Note: TI ADS1262 CHOP mode halves effective settling rate in Sinc4 continuous mode
-     * (~1/2 output rate at higher DRs; at 400 SPS Sinc4 CHOP=1 actual DRDY is ~182..200 SPS;
-     * for exact timing we keep CHOP off by default unless requested and report actual scaled rate). */
-    (void)chop_enabled;
     if (scaled > 65535ull) scaled = 65535ull;
     return (uint16_t)scaled;
 }
@@ -509,3 +508,60 @@ uso_v2_parse_res_t uso_v2_parser_feed(
 }
 
 #endif /* !USO_BOOTLOADER */
+
+bool uso_v2_resolve_config(const uso_v2_config_t *cfg, uint32_t clk_hz, uso_v2_start_rsp_t *out)
+{
+    if (!cfg || !out) return false;
+    if (cfg->pga_gain > 5u || cfg->adc_filter > USO_V2_FLT_FIR || cfg->dsp_lpf_mode > USO_V2_LPF_LEGACY10) {
+        return false;
+    }
+
+    if (cfg->reserved || cfg->decimation > 16u || cfg->batch_size > USO_V2_MAX_BATCH_SAMPLES ||
+        (cfg->adc_flags & ~(USO_V2_ADC_FLAG_VBIAS | USO_V2_ADC_FLAG_PGA_BYP)) ||
+        (cfg->stream_flags & ~USO_V2_STREAM_AUTO_RECOVER)) return false;
+    bool chop = (cfg->adc_flags & USO_V2_ADC_FLAG_CHOP) != 0u;
+
+    uint8_t dr_code = cfg->dr_code;
+    uint8_t decim = cfg->decimation;
+    uint8_t batch = cfg->batch_size;
+    uint16_t eff_fs_dhz = 0u;
+
+    if (dr_code == USO_V2_DR_AUTO) {
+        uso_v2_select_adaptive_rate(
+            cfg->carrier_freq_mhz, clk_hz, chop, &dr_code, &decim, &batch, &eff_fs_dhz
+        );
+        if (cfg->decimation >= 1u && cfg->decimation <= 16u) decim = cfg->decimation;
+        if (cfg->batch_size >= 1u && cfg->batch_size <= USO_V2_MAX_BATCH_SAMPLES) batch = cfg->batch_size;
+    } else {
+        if (dr_code < USO_V2_DR_20 || dr_code > USO_V2_DR_4800) return false;
+        if (decim == 0u) decim = 1u;
+        if (decim > 16u) return false;
+    }
+
+    uint16_t hw_fs_dhz = uso_v2_dr_nominal_dhz(dr_code, clk_hz, chop);
+    if (hw_fs_dhz == 0u) return false;
+    // Static legacy coefficients are designed only for 400 Hz.
+    if (cfg->dsp_lpf_mode == USO_V2_LPF_LEGACY10 && hw_fs_dhz != 4000u) return false;
+    eff_fs_dhz = (uint16_t)(hw_fs_dhz / decim);
+    if (eff_fs_dhz == 0u) return false;
+
+    if (batch == 0u || batch > USO_V2_MAX_BATCH_SAMPLES) {
+        uint32_t auto_b = ((uint32_t)eff_fs_dhz * 25u + 5000u) / 10000u;
+        if (auto_b < 1u) auto_b = 1u;
+        if (auto_b > USO_V2_MAX_BATCH_SAMPLES) auto_b = USO_V2_MAX_BATCH_SAMPLES;
+        batch = (uint8_t)auto_b;
+    }
+
+    out->status           = USO_V2_OK;
+    out->dr_code          = dr_code;
+    out->decimation       = decim;
+    out->batch_size       = batch;
+    out->pga_gain         = cfg->pga_gain;
+    out->adc_filter       = (cfg->adc_filter == USO_V2_FLT_FIR && dr_code > USO_V2_DR_20)
+                                ? USO_V2_FLT_SINC4 : cfg->adc_filter;
+    out->adc_flags        = cfg->adc_flags;
+    out->inpmux           = cfg->inpmux ? cfg->inpmux : USO_V2_MUX_AIN8_AIN9;
+    out->effective_fs_dhz = eff_fs_dhz;
+    out->hw_fs_dhz        = hw_fs_dhz;
+    return true;
+}

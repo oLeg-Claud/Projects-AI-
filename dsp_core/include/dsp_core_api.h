@@ -179,7 +179,7 @@ typedef struct DspSignalBlock {
     const double* raw_samples;
     const double* filtered_samples;
     int32_t       sample_count;
-    int32_t       overflow_flag; /* 1 if 0xFE marker observed */
+    int32_t       overflow_flag; /* bit0: invalid/overflow block; bit1: discontinuity before block */
 } DspSignalBlock;
 
 /* ============================================================================

@@ -24,9 +24,9 @@ ads_result_t ads_decode_ex(const uint8_t b[6], int32_t *value, uint8_t *status, 
     uint8_t sum = (uint8_t)(0x9bu + b[1] + b[2] + b[3] + b[4]);
     if (sum != b[5]) return ADS_CHECKSUM;
 
-    /* Separate fatal hardware alarms (bit0=RESET, bit1=REF_ALM) from PGA signal overrange
-     * (bit2=PGAL_ALM, bit3=PGAH_ALM, bit4=PGAD_ALM). Signal clipping must NOT kill the ADC! */
-    if ((b[0] & 0x03u) != 0u) return ADS_ALARM;
+    /* TI SBAS661C Table 9-18: RESET[0], PGAD[1], PGAH[2], PGAL[3],
+     * REF_ALM[4], EXTCLK[5]. Clock selection is not an analog alarm. */
+    if ((b[0] & 0x11u) != 0u) return ADS_ALARM;
     if (!(b[0] & 0x40u)) return ADS_STALE;
 
     uint32_t raw = ((uint32_t)b[1] << 24) | ((uint32_t)b[2] << 16) |
@@ -36,7 +36,7 @@ ads_result_t ads_decode_ex(const uint8_t b[6], int32_t *value, uint8_t *status, 
     if (value) *value = sample;
 
     if (pga_overflow) {
-        if ((b[0] & 0x1Cu) != 0u || sample == INT32_MAX || sample == INT32_MIN) {
+        if ((b[0] & 0x0Eu) != 0u || sample == INT32_MAX || sample == INT32_MIN) {
             *pga_overflow = true;
         }
     }
