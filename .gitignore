@@ -16,6 +16,12 @@
 !/ProvodkaNG/
 !/ProvodkaNG/**
 
+!/data/
+!/data/**
+
+!/uso_emb/
+!/uso_emb/**
+
 # Exclude C++ build artifacts and compiled binaries
 dsp_core/build/
 dsp_core/**/*.o
