@@ -133,10 +133,13 @@ ProvodkaNG/**/obj/
 ProvodkaNG/.vs/
 ProvodkaNG/**/*.user
 
-# Exclude PlatformIO build cache and Python bytecode (keep uso_emb/dist/ binaries)
+# Exclude PlatformIO build outputs and Python bytecode
 .pio/
 uso_emb/.pio/
 uso_emb/dist/
 uso_emb/**/__pycache__/
 uso_emb/.vs/
 uso_emb/build/
+
+# Visual Studio caches at any project depth
+.vs/
