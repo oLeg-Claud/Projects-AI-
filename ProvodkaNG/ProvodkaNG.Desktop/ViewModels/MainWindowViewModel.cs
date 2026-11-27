@@ -11,6 +11,7 @@ using ProvodkaNG.Core;
 using ProvodkaNG.Core.Models;
 using ProvodkaNG.Core.Native;
 using ProvodkaNG.Desktop.Docking;
+using ProvodkaNG.Desktop.Services;
 
 namespace ProvodkaNG.Desktop.ViewModels;
 
@@ -59,6 +60,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly CancellationTokenSource _supervisorCts = new();
     private readonly SemaphoreSlim _wakeupSignal = new(0, 1);
     private readonly ProvodkaDockFactory _dockFactory;
+    private readonly string? _stateFilePath;
 
     private int _ringHead;
     private int _ringFilled;
@@ -66,6 +68,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool _latestOverflow;
     private long _totalSamples;
     private long _lastSampleTickMs;
+    private int _lastSpLockCount;
+    private bool _isLoadingState;
     private volatile bool _forceReinitRequested;
     private volatile string? _pendingSmpPath;
     private volatile bool _isSmpMode;
@@ -76,7 +80,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool _disposed;
 
     public Func<Task<string?>>? PickSmpFileAsync { get; set; }
+    public Func<WindowPlacementDto?>? CaptureWindowPlacement { get; set; }
     public Action? RequestExit { get; set; }
+    public WindowPlacementDto? SavedWindowPlacement { get; private set; }
 
     public IReadOnlyList<FormatOption> FormatOptions { get; } =
     [
@@ -190,6 +196,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private int[]? _latestCodeScoresPct;
     [ObservableProperty] private int _latestWinningCode5Bit = -1;
     [ObservableProperty] private IReadOnlyList<int> _syncCorrHistory = Array.Empty<int>();
+    [ObservableProperty] private int[]? _liveSyncCorrTrace;
+    [ObservableProperty] private int _liveSyncCorrSignedPct;
+    [ObservableProperty] private int _liveSyncPeakPct;
 
     // --- Latest Decoded Frame Telemetry ---
     [ObservableProperty] private int _frameNumber;
@@ -224,11 +233,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Func<DspSettings, IDspEngineClient>? engineFactory = null,
         Action<Action>? uiDispatcher = null,
         Func<UsoProbeResult>? usoScanner = null,
-        bool autoStart = true)
+        bool autoStart = true,
+        string? stateFilePath = null)
     {
         _engineFactory = engineFactory ?? (cfg => new DspEngineClient(cfg));
         _dispatchToUi = uiDispatcher ?? (action => Dispatcher.UIThread.Post(action, DispatcherPriority.Render));
         _usoScanner = usoScanner ?? DspEngineClient.ScanLegacyUso;
+        _stateFilePath = stateFilePath
+            ?? (engineFactory is null && usoScanner is null ? WorkspaceStateStore.DefaultFilePath : null);
 
         _selectedFormat = FormatOptions[0];
         _selectedSpeed = SpeedOptions[0];
@@ -238,7 +250,30 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _selectedInputMux = InputMuxOptions[0];
 
         _dockFactory = new ProvodkaDockFactory(this);
-        ResetDockLayout();
+
+        WorkspaceStateDto? saved = _stateFilePath is not null ? WorkspaceStateStore.Load(_stateFilePath) : null;
+        _isLoadingState = true;
+        try
+        {
+            ApplySavedSettings(saved?.Settings);
+            SavedWindowPlacement = saved?.Window;
+
+            IRootDock? restored = _dockFactory.RestoreLayout(saved?.DockLayout);
+            if (restored is not null)
+            {
+                _dockFactory.InitLayout(restored);
+                Layout = restored;
+            }
+            else
+            {
+                ResetDockLayout();
+            }
+        }
+        finally
+        {
+            _isLoadingState = false;
+        }
+
         TryQueryNativeIsa();
 
         if (autoStart)
@@ -253,18 +288,44 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (value is null) return;
         IsNdmVisible = value.Format == DspFrameFormat.NdmGkRetr;
         ApplyLiveConfigIfRunning();
+        SaveSettingsIfReady();
     }
 
-    partial void OnGainIndexChanged(int value) => ApplyLiveConfigIfRunning();
-    partial void OnCorrectorEnabledChanged(bool value) => ApplyLiveConfigIfRunning();
-    partial void OnNcodChanged(int value) => ApplyLiveConfigIfRunning();
-    partial void OnDcpThresholdChanged(int value) => ApplyLiveConfigIfRunning();
-    partial void OnEnableStepTrackChanged(bool value) => ApplyLiveConfigIfRunning();
+    partial void OnGainIndexChanged(int value)
+    {
+        ApplyLiveConfigIfRunning();
+        SaveSettingsIfReady();
+    }
+
+    partial void OnCorrectorEnabledChanged(bool value)
+    {
+        ApplyLiveConfigIfRunning();
+        SaveSettingsIfReady();
+    }
+
+    partial void OnNcodChanged(int value)
+    {
+        ApplyLiveConfigIfRunning();
+        SaveSettingsIfReady();
+    }
+
+    partial void OnDcpThresholdChanged(int value)
+    {
+        ApplyLiveConfigIfRunning();
+        SaveSettingsIfReady();
+    }
+
+    partial void OnEnableStepTrackChanged(bool value)
+    {
+        ApplyLiveConfigIfRunning();
+        SaveSettingsIfReady();
+    }
 
     partial void OnCarrierFreqHzChanged(double value)
     {
         // Fast live reconfigure directly on the open USO32 handle (~25 ms V2 / ~130 ms Legacy, zero COM rescan!)
         ApplyLiveConfigIfRunning();
+        SaveSettingsIfReady();
         if (IsConnected && !_isSmpMode)
         {
             StatusBanner = $"Переключение несущей на {value:0.#} Гц...";
@@ -274,6 +335,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     partial void OnSelectedSpeedChanged(SpeedOption value)
     {
         if (value is null) return;
+        SaveSettingsIfReady();
         if (_isSmpMode && !string.IsNullOrEmpty(_pendingSmpPath))
         {
             _forceReinitRequested = true;
@@ -285,24 +347,28 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (value is null) return;
         ApplyV2OptionsLiveIfRunning();
+        SaveSettingsIfReady();
     }
 
     partial void OnSelectedAdcFilterChanged(AdcFilterOption value)
     {
         if (value is null) return;
         ApplyV2OptionsLiveIfRunning();
+        SaveSettingsIfReady();
     }
 
     partial void OnSelectedMcuLpfModeChanged(McuLpfOption value)
     {
         if (value is null) return;
         ApplyV2OptionsLiveIfRunning();
+        SaveSettingsIfReady();
     }
 
     partial void OnSelectedInputMuxChanged(InputMuxOption value)
     {
         if (value is null) return;
         ApplyV2OptionsLiveIfRunning();
+        SaveSettingsIfReady();
     }
 
     partial void OnChopEnabledChanged(bool value) => ApplyV2OptionsLiveIfRunning();
@@ -357,6 +423,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             Application.Current.RequestedThemeVariant = IsDarkTheme ? ThemeVariant.Dark : ThemeVariant.Light;
         }
+        SaveSettingsIfReady();
     }
 
     [RelayCommand]
@@ -365,6 +432,104 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         IRootDock layout = _dockFactory.CreateLayout();
         _dockFactory.InitLayout(layout);
         Layout = layout;
+        SaveSettingsIfReady();
+    }
+
+    public void SaveWorkspaceState(WindowPlacementDto? windowPlacement = null)
+    {
+        if (_stateFilePath is null)
+            return;
+
+        WindowPlacementDto? placement = windowPlacement ?? CaptureWindowPlacement?.Invoke() ?? SavedWindowPlacement;
+        if (placement is not null)
+            SavedWindowPlacement = placement;
+
+        int rateIdx = 0;
+        for (int i = 0; i < RateModeOptions.Count; i++)
+        {
+            if (ReferenceEquals(RateModeOptions[i], SelectedRateMode))
+            {
+                rateIdx = i;
+                break;
+            }
+        }
+
+        var dto = new WorkspaceStateDto
+        {
+            Version = 1,
+            Window = placement,
+            Settings = new AppSettingsDto
+            {
+                IsDarkTheme = IsDarkTheme,
+                FormatId = (int)(SelectedFormat?.Format ?? DspFrameFormat.StdGk),
+                GainIndex = GainIndex,
+                CarrierFreqHz = CarrierFreqHz,
+                Ncod = Ncod,
+                DcpThreshold = DcpThreshold,
+                CorrectorEnabled = CorrectorEnabled,
+                EnableStepTrack = EnableStepTrack,
+                PlaybackSpeedMultiplier = SelectedSpeed?.Multiplier ?? 1,
+                RateModeIndex = rateIdx,
+                AdcFilterCode = SelectedAdcFilter?.FilterCode ?? 3,
+                McuLpfModeCode = SelectedMcuLpfMode?.ModeCode ?? 1,
+                InputMuxCode = SelectedInputMux?.MuxCode ?? 0x89
+            },
+            DockLayout = _dockFactory.CaptureLayout(Layout)
+        };
+
+        WorkspaceStateStore.Save(dto, _stateFilePath);
+    }
+
+    private void SaveSettingsIfReady()
+    {
+        if (!_isLoadingState && !_disposed)
+            SaveWorkspaceState();
+    }
+
+    private void ApplySavedSettings(AppSettingsDto? s)
+    {
+        if (s is null)
+            return;
+
+        IsDarkTheme = s.IsDarkTheme;
+        ThemeButtonText = IsDarkTheme ? "Ночная вахта" : "Дневная вахта";
+
+        FormatOption? fmt = FormatOptions.FirstOrDefault(f => (int)f.Format == s.FormatId);
+        if (fmt is not null)
+        {
+            SelectedFormat = fmt;
+            IsNdmVisible = fmt.Format == DspFrameFormat.NdmGkRetr;
+        }
+
+        GainIndex = Math.Clamp(s.GainIndex, 0, 5);
+
+        double freq = CarrierFrequencies.FirstOrDefault(f => Math.Abs(f - s.CarrierFreqHz) < 0.05);
+        if (freq > 0.0)
+            CarrierFreqHz = freq;
+
+        Ncod = s.Ncod == 1 ? 1 : 0;
+        DcpThreshold = Math.Clamp(s.DcpThreshold, 20, 95);
+        CorrectorEnabled = s.CorrectorEnabled;
+        EnableStepTrack = s.EnableStepTrack;
+
+        SpeedOption? spd = SpeedOptions.FirstOrDefault(o => o.Multiplier == s.PlaybackSpeedMultiplier);
+        if (spd is not null)
+            SelectedSpeed = spd;
+
+        if (s.RateModeIndex >= 0 && s.RateModeIndex < RateModeOptions.Count)
+            SelectedRateMode = RateModeOptions[s.RateModeIndex];
+
+        AdcFilterOption? flt = AdcFilterOptions.FirstOrDefault(o => o.FilterCode == s.AdcFilterCode);
+        if (flt is not null)
+            SelectedAdcFilter = flt;
+
+        McuLpfOption? lpf = McuLpfOptions.FirstOrDefault(o => o.ModeCode == s.McuLpfModeCode);
+        if (lpf is not null)
+            SelectedMcuLpfMode = lpf;
+
+        InputMuxOption? mux = InputMuxOptions.FirstOrDefault(o => o.MuxCode == s.InputMuxCode);
+        if (mux is not null)
+            SelectedInputMux = mux;
     }
 
     [RelayCommand]
@@ -503,44 +668,100 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// </summary>
     public void FlushPlotsToUi()
     {
-        double[] rawSnap;
-        double[] firSnap;
-        bool overflow;
-        long totalSamples;
-        int validCount;
+        double[]? rawSnap = null;
+        double[]? firSnap = null;
+        bool overflow = false;
+        long totalSamples = 0;
+        int validCount = 0;
+        bool hasSignal = false;
 
         lock (_signalLock)
         {
-            if (!_signalDirty)
-                return;
-            _signalDirty = false;
+            if (_signalDirty)
+            {
+                _signalDirty = false;
+                hasSignal = true;
 
-            validCount = _ringFilled;
-            overflow = _latestOverflow;
-            totalSamples = _totalSamples;
+                validCount = _ringFilled;
+                overflow = _latestOverflow;
+                totalSamples = _totalSamples;
 
-            rawSnap = new double[SignalWindowLength];
-            firSnap = new double[SignalWindowLength];
-            int tailLen = SignalWindowLength - _ringHead;
-            Array.Copy(_rawRing, _ringHead, rawSnap, 0, tailLen);
-            Array.Copy(_rawRing, 0, rawSnap, tailLen, _ringHead);
-            Array.Copy(_firRing, _ringHead, firSnap, 0, tailLen);
-            Array.Copy(_firRing, 0, firSnap, tailLen, _ringHead);
+                rawSnap = new double[SignalWindowLength];
+                firSnap = new double[SignalWindowLength];
+                int tailLen = SignalWindowLength - _ringHead;
+                Array.Copy(_rawRing, _ringHead, rawSnap, 0, tailLen);
+                Array.Copy(_rawRing, 0, rawSnap, tailLen, _ringHead);
+                Array.Copy(_firRing, _ringHead, firSnap, 0, tailLen);
+                Array.Copy(_firRing, 0, firSnap, tailLen, _ringHead);
+            }
         }
 
-        double fsForFft = ActiveSampleRateHz > 1.0 ? ActiveSampleRateHz : 250.0;
-        SpectrumSnapshot? spec = validCount >= 64
-            ? SignalAnalyzer.ComputeSpectrum(firSnap.AsSpan(Math.Max(0, SignalWindowLength - Math.Min(validCount, FftWindowLength))), fsForFft, FftWindowLength)
-            : null;
+        SyncCorrTraceSnapshot? spTrace = null;
+        IDspEngineClient? eng = _engine;
+        if (eng is not null)
+        {
+            try
+            {
+                spTrace = eng.GetSyncCorrTrace(1024);
+            }
+            catch (ObjectDisposedException)
+            {
+                spTrace = null;
+            }
+        }
+
+        if (!hasSignal && spTrace is null)
+            return;
+
+        SpectrumSnapshot? spec = null;
+        if (hasSignal && firSnap is not null && validCount >= 64)
+        {
+            double fsForFft = ActiveSampleRateHz > 1.0 ? ActiveSampleRateHz : 250.0;
+            spec = SignalAnalyzer.ComputeSpectrum(
+                firSnap.AsSpan(Math.Max(0, SignalWindowLength - Math.Min(validCount, FftWindowLength))),
+                fsForFft,
+                FftWindowLength);
+        }
+
+        int spPeak = 0;
+        if (spTrace is { TraceSignedPct.Length: > 0 })
+        {
+            foreach (int v in spTrace.TraceSignedPct)
+            {
+                int a = Math.Abs(v);
+                if (a > spPeak) spPeak = a;
+            }
+        }
 
         _dispatchToUi(() =>
         {
-            OscRawSamples = rawSnap;
-            OscFilteredSamples = firSnap;
-            AdcOverflowFlag = overflow;
-            TotalSamplesReceived = totalSamples;
-            if (spec is not null)
-                LatestSpectrum = spec;
+            if (hasSignal && rawSnap is not null && firSnap is not null)
+            {
+                OscRawSamples = rawSnap;
+                OscFilteredSamples = firSnap;
+                AdcOverflowFlag = overflow;
+                TotalSamplesReceived = totalSamples;
+                if (spec is not null)
+                    LatestSpectrum = spec;
+            }
+
+            if (spTrace is not null)
+            {
+                if (spTrace.TraceSignedPct.Length > 0)
+                    LiveSyncCorrTrace = spTrace.TraceSignedPct;
+                LiveSyncCorrSignedPct = spTrace.LiveSignedPct;
+                LiveSyncPeakPct = spPeak;
+
+                if (spTrace.LockCount > _lastSpLockCount && spTrace.LastLockedPct > 0)
+                {
+                    _lastSpLockCount = spTrace.LockCount;
+                    SyncCorrPct = spTrace.LastLockedPct;
+                    var syncHist = new List<int>(SyncCorrHistory) { spTrace.LastLockedPct };
+                    while (syncHist.Count > MaxSyncHistory)
+                        syncHist.RemoveAt(0);
+                    SyncCorrHistory = syncHist;
+                }
+            }
         });
     }
 
@@ -848,6 +1069,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             _latestOverflow = false;
             _signalDirty = false;
         }
+        _lastSpLockCount = 0;
+        _dispatchToUi(() =>
+        {
+            LiveSyncCorrTrace = null;
+            LiveSyncCorrSignedPct = 0;
+            LiveSyncPeakPct = 0;
+        });
     }
 
     private void ApplyLiveConfigIfRunning()
@@ -952,10 +1180,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 _ => "Н/Д"
             };
 
-            var syncHist = new List<int>(SyncCorrHistory) { frame.SyncCorrPct };
-            while (syncHist.Count > MaxSyncHistory)
-                syncHist.RemoveAt(0);
-            SyncCorrHistory = syncHist;
+            if (_lastSpLockCount == 0)
+            {
+                var syncHist = new List<int>(SyncCorrHistory) { frame.SyncCorrPct };
+                while (syncHist.Count > MaxSyncHistory)
+                    syncHist.RemoveAt(0);
+                SyncCorrHistory = syncHist;
+            }
 
             ZuDeg = frame.ZuDeg;
             AzimuthDeg = frame.AzTrueDeg > -9000.0
@@ -1033,6 +1264,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (_disposed)
             return;
         _disposed = true;
+
+        SaveWorkspaceState();
 
         _uiPlotTimer?.Stop();
         _supervisorCts.Cancel();

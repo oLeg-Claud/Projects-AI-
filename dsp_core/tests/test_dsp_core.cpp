@@ -582,6 +582,18 @@ void test_real_downhole_smp_sp_and_nonblocking_configure() {
         CHECK(rcap.frames >= 1);
         CHECK(rcap.best_sync >= 80);
 
+        int32_t trace[1024]{};
+        int32_t live_pct = 0, locked_pct = 0, lock_count = 0;
+        int32_t trace_n = dsp_get_sync_corr_trace(eng, trace, 1024, &live_pct, &locked_pct, &lock_count);
+        CHECK(trace_n > 64);
+        CHECK(lock_count >= 1);
+        CHECK(locked_pct >= 75);
+        int32_t trace_peak = 0;
+        for (int32_t i = 0; i < trace_n; ++i) {
+            if (std::abs(trace[i]) > trace_peak) trace_peak = std::abs(trace[i]);
+        }
+        CHECK(trace_peak >= 80);
+
         /* 9c. Non-blocking live format switch during real-time 1x playback (must return in < 25 ms) */
         cfg.playback_speed = 1;
         CHECK(dsp_configure(eng, &cfg) == DSP_OK);

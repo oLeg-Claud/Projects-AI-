@@ -62,6 +62,12 @@ public:
         int32_t frame_phase
     ) const;
 
+    /**
+     * Evaluate signed normalized Sync Preamble correlation (-100..+100%) at a single lag.
+     * `seg` must point to at least `DSP_SYNC_SAMPLES` valid double samples.
+     */
+    int32_t correlate_sync_at(const double* seg) const;
+
     /** Helper for unit tests: access expanded sync & RM(1,4) templates. */
     const std::array<double, DSP_SYNC_SAMPLES>& sync_template() const { return sync_tpl_; }
     const std::array<double, DSP_VEC_SAMPLES>& vec_template(int32_t idx) const { return vec_tpls_[idx & 0x0F]; }
@@ -72,6 +78,7 @@ private:
     int32_t ncod_;
     std::array<double, DSP_SYNC_SAMPLES> sync_tpl_;
     double sync_energy_;
+    double sync_tpl_sum_;
     std::array<std::array<double, DSP_VEC_SAMPLES>, DSP_RM14_CODES> vec_tpls_;
     std::array<double, DSP_RM14_CODES> vec_energies_;
 };

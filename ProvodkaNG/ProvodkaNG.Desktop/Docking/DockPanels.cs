@@ -42,6 +42,19 @@ public sealed class SpectrumDocument : Document
     }
 }
 
+public sealed class SyncCorrelationDocument : Document
+{
+    public MainWindowViewModel Main { get; }
+
+    public SyncCorrelationDocument(MainWindowViewModel main)
+    {
+        Main = main;
+        Id = "SyncCorrelationDoc";
+        Title = "Корреляция СП";
+        CanClose = false;
+    }
+}
+
 public sealed class CorrelationDocument : Document
 {
     public MainWindowViewModel Main { get; }

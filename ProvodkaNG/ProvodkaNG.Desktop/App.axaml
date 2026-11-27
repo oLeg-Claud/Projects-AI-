@@ -249,10 +249,26 @@
       </Border>
     </DataTemplate>
 
-    <!-- 4. Окно: Корреляция RM(1,4) и СП -->
+    <!-- 4. Окно: Корреляция СП (живой график 128-чиповой СП) -->
+    <DataTemplate x:DataType="dp:SyncCorrelationDocument">
+      <Border Background="{DynamicResource BgPanelBrush}" Padding="6">
+        <ctrl:SyncCorrelationControl LiveSyncCorrTrace="{Binding Main.LiveSyncCorrTrace}"
+                                     SyncCorrHistory="{Binding Main.SyncCorrHistory}"
+                                     LiveSyncCorrSignedPct="{Binding Main.LiveSyncCorrSignedPct}"
+                                     LiveSyncPeakPct="{Binding Main.LiveSyncPeakPct}"
+                                     LatestSyncCorrPct="{Binding Main.SyncCorrPct}"
+                                     DcpThreshold="{Binding Main.DcpThreshold}"
+                                     LastPikDrift="{Binding Main.LastPikDrift}"
+                                     IsDarkTheme="{Binding Main.IsDarkTheme}" />
+      </Border>
+    </DataTemplate>
+
+    <!-- 5. Окно: Корреляция RM(1,4) и СП -->
     <DataTemplate x:DataType="dp:CorrelationDocument">
       <Border Background="{DynamicResource BgPanelBrush}" Padding="6">
-        <ctrl:CorrelationControl CodeScoresPct="{Binding Main.LatestCodeScoresPct}"
+        <ctrl:CorrelationControl LiveSyncCorrTrace="{Binding Main.LiveSyncCorrTrace}"
+                                 LiveSyncPeakPct="{Binding Main.LiveSyncPeakPct}"
+                                 CodeScoresPct="{Binding Main.LatestCodeScoresPct}"
                                  SyncCorrHistory="{Binding Main.SyncCorrHistory}"
                                  WinningCode5Bit="{Binding Main.LatestWinningCode5Bit}"
                                  DcpThreshold="{Binding Main.DcpThreshold}"
@@ -342,10 +358,10 @@
       </ScrollViewer>
     </DataTemplate>
 
-    <!-- 6. Окно: Векторы RM(1,4) -->
+    <!-- 7. Окно: Векторы RM(1,4) — перенос по строкам при заполнении ширины окна -->
     <DataTemplate x:DataType="dp:VectorsTool">
       <Border Background="{DynamicResource BgPanelBrush}" Padding="8">
-        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
           <ItemsControl ItemsSource="{Binding Main.DecodedVectors}">
             <ItemsControl.ItemsPanel>
               <ItemsPanelTemplate>

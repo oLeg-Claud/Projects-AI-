@@ -332,3 +332,13 @@ public sealed record UsoRuntimeInfo(
         n.TxOverflows,
         n.RxPackets);
 }
+
+/// <summary>
+/// Continuous live Sync Preamble (СП) signed correlation trace (-100..+100%)
+/// from DspCore's virtual grid correlator.
+/// </summary>
+public sealed record SyncCorrTraceSnapshot(
+    int[] TraceSignedPct,
+    int LiveSignedPct,
+    int LastLockedPct,
+    int LockCount);

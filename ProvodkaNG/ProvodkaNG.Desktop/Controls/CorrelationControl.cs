@@ -12,6 +12,12 @@ namespace ProvodkaNG.Desktop.Controls;
 /// </summary>
 public sealed class CorrelationControl : Control
 {
+    public static readonly StyledProperty<int[]?> LiveSyncCorrTraceProperty =
+        AvaloniaProperty.Register<CorrelationControl, int[]?>(nameof(LiveSyncCorrTrace));
+
+    public static readonly StyledProperty<int> LiveSyncPeakPctProperty =
+        AvaloniaProperty.Register<CorrelationControl, int>(nameof(LiveSyncPeakPct), 0);
+
     public static readonly StyledProperty<int[]?> CodeScoresPctProperty =
         AvaloniaProperty.Register<CorrelationControl, int[]?>(nameof(CodeScoresPct));
 
@@ -36,6 +42,8 @@ public sealed class CorrelationControl : Control
     static CorrelationControl()
     {
         AffectsRender<CorrelationControl>(
+            LiveSyncCorrTraceProperty,
+            LiveSyncPeakPctProperty,
             CodeScoresPctProperty,
             SyncCorrHistoryProperty,
             WinningCode5BitProperty,
@@ -49,6 +57,18 @@ public sealed class CorrelationControl : Control
     {
         MinHeight = 140;
         ClipToBounds = true;
+    }
+
+    public int[]? LiveSyncCorrTrace
+    {
+        get => GetValue(LiveSyncCorrTraceProperty);
+        set => SetValue(LiveSyncCorrTraceProperty, value);
+    }
+
+    public int LiveSyncPeakPct
+    {
+        get => GetValue(LiveSyncPeakPctProperty);
+        set => SetValue(LiveSyncPeakPctProperty, value);
     }
 
     public int[]? CodeScoresPct
@@ -112,7 +132,8 @@ public sealed class CorrelationControl : Control
         var barIdleBrush = new SolidColorBrush(dark ? Color.Parse("#334155") : Color.Parse("#94A3B8"));
         var barWinPosBrush = new SolidColorBrush(Color.Parse("#10B981"));
         var barWinNegBrush = new SolidColorBrush(Color.Parse("#22D3EE"));
-        var syncPen = new Pen(new SolidColorBrush(Color.Parse("#10B981")), 1.8);
+        var syncPen = new Pen(new SolidColorBrush(Color.Parse("#10B981")), 1.6);
+        var syncFill = new SolidColorBrush(dark ? Color.FromArgb(46, 16, 185, 129) : Color.FromArgb(36, 16, 185, 129));
         var typeface = new Typeface("Consolas", FontStyle.Normal, FontWeight.SemiBold);
 
         context.FillRectangle(bg, new Rect(0, 0, w, h));
@@ -121,12 +142,13 @@ public sealed class CorrelationControl : Control
         double padR = 10;
         double plotW = Math.Max(10, w - padL - padR);
 
-        // --- TOP ZONE (35%): Sync Preamble Correlation History ---
+        // --- TOP ZONE (38%): Live |СП| Correlation + Locked Peaks ---
         double topY = 22;
-        double topH = Math.Max(24, (h - 46) * 0.36);
+        double topH = Math.Max(32, (h - 46) * 0.38);
+        int thr = Math.Clamp(DcpThreshold, 0, 100);
 
         var spHeader = new FormattedText(
-            $"СП корреляция: {LatestSyncCorrPct}%   Порог ДСП: {DcpThreshold}%   Дрейф PIK5: {LastPikDrift:+#;-#;0}",
+            $"СП: захв. {LatestSyncCorrPct}%   Пик: {LiveSyncPeakPct}%   Порог: {thr}%   PIK5: {LastPikDrift:+#;-#;0}",
             CultureInfo.InvariantCulture,
             FlowDirection.LeftToRight,
             typeface,
@@ -135,24 +157,82 @@ public sealed class CorrelationControl : Control
         context.DrawText(spHeader, new Point(padL, 4));
 
         context.DrawRectangle(null, gridPen, new Rect(padL, topY, plotW, topH));
-        double thrY = topY + (1.0 - Math.Clamp(DcpThreshold, 0, 100) / 100.0) * topH;
+        double halfTopY = topY + topH * 0.5;
+        context.DrawLine(gridPen, new Point(padL, halfTopY), new Point(padL + plotW, halfTopY));
+        context.DrawText(new FormattedText("100", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, 8.0, mutedBrush), new Point(4, topY - 4));
+        context.DrawText(new FormattedText("50", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, 8.0, mutedBrush), new Point(10, halfTopY - 4));
+        context.DrawText(new FormattedText("0", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, 8.0, mutedBrush), new Point(16, topY + topH - 8));
+
+        double thrY = topY + (1.0 - thr / 100.0) * topH;
         context.DrawLine(threshPen, new Point(padL, thrY), new Point(padL + plotW, thrY));
 
-        if (SyncCorrHistory is { Count: > 0 } hist)
+        int[]? liveTrace = LiveSyncCorrTrace;
+        if (liveTrace is { Length: > 0 })
         {
-            var geo = new StreamGeometry();
-            using (var ctx = geo.Open())
+            int count = liveTrace.Length;
+            var lineGeo = new StreamGeometry();
+            var fillGeo = new StreamGeometry();
+            using (var lctx = lineGeo.Open())
+            using (var fctx = fillGeo.Open())
             {
-                int count = hist.Count;
+                double lastX = padL;
                 for (int i = 0; i < count; i++)
                 {
+                    int mag = Math.Clamp(Math.Abs(liveTrace[i]), 0, 100);
                     double x = count == 1 ? padL + plotW * 0.5 : padL + (double)i / (count - 1) * plotW;
-                    double y = topY + (1.0 - Math.Clamp(hist[i], 0, 100) / 100.0) * topH;
-                    if (i == 0) ctx.BeginFigure(new Point(x, y), false);
-                    else ctx.LineTo(new Point(x, y));
+                    double y = topY + (1.0 - mag / 100.0) * topH;
+                    lastX = x;
+                    if (i == 0)
+                    {
+                        lctx.BeginFigure(new Point(x, y), false);
+                        fctx.BeginFigure(new Point(x, topY + topH), true);
+                        fctx.LineTo(new Point(x, y));
+                    }
+                    else
+                    {
+                        lctx.LineTo(new Point(x, y));
+                        fctx.LineTo(new Point(x, y));
+                    }
                 }
+                fctx.LineTo(new Point(lastX, topY + topH));
+                fctx.EndFigure(true);
             }
-            context.DrawGeometry(null, syncPen, geo);
+            context.DrawGeometry(syncFill, null, fillGeo);
+            context.DrawGeometry(null, syncPen, lineGeo);
+
+            for (int i = 0; i < count; i++)
+            {
+                int mag = Math.Abs(liveTrace[i]);
+                if (mag < thr) continue;
+                double x = count == 1 ? padL + plotW * 0.5 : padL + (double)i / (count - 1) * plotW;
+                double y = topY + (1.0 - Math.Clamp(mag, 0, 100) / 100.0) * topH;
+                context.DrawEllipse(liveTrace[i] >= 0 ? barWinPosBrush : barWinNegBrush, null, new Point(x, y), 2.8, 2.8);
+            }
+        }
+        else if (SyncCorrHistory is { Count: > 0 } hist)
+        {
+            int count = hist.Count;
+            if (count > 1)
+            {
+                var geo = new StreamGeometry();
+                using (var ctx = geo.Open())
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        double x = padL + (double)i / (count - 1) * plotW;
+                        double y = topY + (1.0 - Math.Clamp(hist[i], 0, 100) / 100.0) * topH;
+                        if (i == 0) ctx.BeginFigure(new Point(x, y), false);
+                        else ctx.LineTo(new Point(x, y));
+                    }
+                }
+                context.DrawGeometry(null, syncPen, geo);
+            }
+            for (int i = 0; i < count; i++)
+            {
+                double x = count == 1 ? padL + plotW * 0.5 : padL + (double)i / (count - 1) * plotW;
+                double y = topY + (1.0 - Math.Clamp(hist[i], 0, 100) / 100.0) * topH;
+                context.DrawEllipse(okBrush, null, new Point(x, y), 3.0, 3.0);
+            }
         }
 
         // --- BOTTOM ZONE (65%): 16 RM(1,4) Orthogonal Code Bars ---
