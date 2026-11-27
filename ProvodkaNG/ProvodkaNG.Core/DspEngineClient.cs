@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Threading;
 using ProvodkaNG.Core.Models;
 using ProvodkaNG.Core.Native;
 
@@ -40,7 +41,8 @@ public interface IDspEngineClient : IDisposable
 /// </summary>
 public sealed unsafe class DspEngineClient : IDspEngineClient
 {
-    private readonly object _sync = new();
+    private readonly ReaderWriterLockSlim _handleLock = new(LockRecursionPolicy.NoRecursion);
+    private readonly object _lifecycleLock = new();
     private nint _handle;
     private bool _disposed;
     private volatile bool _isRunning;
@@ -66,10 +68,15 @@ public sealed unsafe class DspEngineClient : IDspEngineClient
     {
         get
         {
-            lock (_sync)
+            _handleLock.EnterReadLock();
+            try
             {
                 ThrowIfDisposed();
                 return DspNativeMethods.GetStepH(_handle);
+            }
+            finally
+            {
+                _handleLock.ExitReadLock();
             }
         }
     }
@@ -160,44 +167,70 @@ public sealed unsafe class DspEngineClient : IDspEngineClient
     public DspStatusCode Configure(DspSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        lock (_sync)
+        _handleLock.EnterReadLock();
+        try
         {
             ThrowIfDisposed();
             DspConfigNative nativeCfg = settings.ToNative();
             return DspNativeMethods.Configure(_handle, in nativeCfg);
+        }
+        finally
+        {
+            _handleLock.ExitReadLock();
         }
     }
 
     public int LoadFirFile(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        lock (_sync)
+        _handleLock.EnterReadLock();
+        try
         {
             ThrowIfDisposed();
             return DspNativeMethods.LoadFirFile(_handle, path);
+        }
+        finally
+        {
+            _handleLock.ExitReadLock();
         }
     }
 
     public DspStatusCode Start()
     {
-        lock (_sync)
+        _handleLock.EnterReadLock();
+        try
         {
-            ThrowIfDisposed();
-            DspStatusCode status = DspNativeMethods.Start(_handle);
-            if (status == DspStatusCode.Ok)
-                _isRunning = true;
-            return status;
+            lock (_lifecycleLock)
+            {
+                ThrowIfDisposed();
+                DspStatusCode status = DspNativeMethods.Start(_handle);
+                if (status == DspStatusCode.Ok)
+                    _isRunning = true;
+                return status;
+            }
+        }
+        finally
+        {
+            _handleLock.ExitReadLock();
         }
     }
 
     public void Stop()
     {
-        lock (_sync)
+        _handleLock.EnterReadLock();
+        try
         {
-            if (_disposed || _handle == nint.Zero)
-                return;
-            DspNativeMethods.Stop(_handle);
-            _isRunning = false;
+            lock (_lifecycleLock)
+            {
+                if (_disposed || _handle == nint.Zero)
+                    return;
+                DspNativeMethods.Stop(_handle);
+                _isRunning = false;
+            }
+        }
+        finally
+        {
+            _handleLock.ExitReadLock();
         }
     }
 
@@ -206,7 +239,8 @@ public sealed unsafe class DspEngineClient : IDspEngineClient
         if (samples.IsEmpty)
             return DspStatusCode.Ok;
 
-        lock (_sync)
+        _handleLock.EnterReadLock();
+        try
         {
             ThrowIfDisposed();
             fixed (double* ptr = samples)
@@ -214,63 +248,97 @@ public sealed unsafe class DspEngineClient : IDspEngineClient
                 return DspNativeMethods.PushSamples(_handle, ptr, samples.Length, overflowFlag ? 1 : 0);
             }
         }
+        finally
+        {
+            _handleLock.ExitReadLock();
+        }
     }
 
     public FrameSnapshot? GetLastFrame()
     {
-        lock (_sync)
+        _handleLock.EnterReadLock();
+        try
         {
             ThrowIfDisposed();
             DspStatusCode status = DspNativeMethods.GetLastFrame(_handle, out DspFrameDataNative native);
             return status == DspStatusCode.Ok ? FrameSnapshot.FromNative(in native) : null;
+        }
+        finally
+        {
+            _handleLock.ExitReadLock();
         }
     }
 
     public DspStatusCode SetUsoV2Options(UsoV2Options options)
     {
         ArgumentNullException.ThrowIfNull(options);
-        lock (_sync)
+        _handleLock.EnterReadLock();
+        try
         {
             ThrowIfDisposed();
             DspUsoV2OptionsNative native = options.ToNative();
             return DspNativeMethods.SetUsoV2Options(_handle, in native);
         }
+        finally
+        {
+            _handleLock.ExitReadLock();
+        }
     }
 
     public UsoRuntimeInfo? GetUsoInfo()
     {
-        lock (_sync)
+        _handleLock.EnterReadLock();
+        try
         {
             ThrowIfDisposed();
             DspStatusCode status = DspNativeMethods.GetUsoInfo(_handle, out DspUsoRuntimeInfoNative native);
             return status == DspStatusCode.Ok ? UsoRuntimeInfo.FromNative(in native) : null;
         }
+        finally
+        {
+            _handleLock.ExitReadLock();
+        }
     }
 
     public DspStatusCode RecalibrateUso()
     {
-        lock (_sync)
+        _handleLock.EnterReadLock();
+        try
         {
             ThrowIfDisposed();
             return DspNativeMethods.UsoRecalibrate(_handle);
+        }
+        finally
+        {
+            _handleLock.ExitReadLock();
         }
     }
 
     public DspStatusCode ResetUsoAdc()
     {
-        lock (_sync)
+        _handleLock.EnterReadLock();
+        try
         {
             ThrowIfDisposed();
             return DspNativeMethods.UsoResetAdc(_handle);
+        }
+        finally
+        {
+            _handleLock.ExitReadLock();
         }
     }
 
     public DspStatusCode RefreshUsoDiagnostics()
     {
-        lock (_sync)
+        _handleLock.EnterReadLock();
+        try
         {
             ThrowIfDisposed();
             return DspNativeMethods.UsoRefreshDiag(_handle);
+        }
+        finally
+        {
+            _handleLock.ExitReadLock();
         }
     }
 
@@ -370,7 +438,18 @@ public sealed unsafe class DspEngineClient : IDspEngineClient
 
     public void Dispose()
     {
-        lock (_sync)
+        // Stop worker first so any waiting sync op (Recalibrate/ResetAdc) wakes up before acquiring write lock.
+        try
+        {
+            Stop();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Already disposed
+        }
+
+        _handleLock.EnterWriteLock();
+        try
         {
             if (_disposed)
                 return;
@@ -382,6 +461,10 @@ public sealed unsafe class DspEngineClient : IDspEngineClient
                 DspNativeMethods.Destroy(_handle);
                 _handle = nint.Zero;
             }
+        }
+        finally
+        {
+            _handleLock.ExitWriteLock();
         }
         GC.SuppressFinalize(this);
     }

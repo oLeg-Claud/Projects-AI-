@@ -57,6 +57,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly double[] _rawRing = new double[SignalWindowLength];
     private readonly double[] _firRing = new double[SignalWindowLength];
     private readonly CancellationTokenSource _supervisorCts = new();
+    private readonly SemaphoreSlim _wakeupSignal = new(0, 1);
     private readonly ProvodkaDockFactory _dockFactory;
 
     private int _ringHead;
@@ -75,7 +76,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool _disposed;
 
     public Func<Task<string?>>? PickSmpFileAsync { get; set; }
-    public Func<Task<string?>>? PickFirFileAsync { get; set; }
     public Action? RequestExit { get; set; }
 
     public IReadOnlyList<FormatOption> FormatOptions { get; } =
@@ -123,8 +123,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public IReadOnlyList<McuLpfOption> McuLpfOptions { get; } =
     [
-        new(0, "Bypass (линейная фаза)"),
-        new(1, "Баттерворт 4-го пор."),
+        new(0, "Bypass (без ФНЧ МК)"),
+        new(1, "Баттерворт 4-го пор. (авто)"),
         new(2, "Legacy 10-го пор.")
     ];
 
@@ -166,7 +166,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private McuLpfOption _selectedMcuLpfMode;
     [ObservableProperty] private InputMuxOption _selectedInputMux;
     [ObservableProperty] private bool _chopEnabled;
-    [ObservableProperty] private string _firFilePath = string.Empty;
     [ObservableProperty] private int _gainIndex = 0;
     [ObservableProperty] private double _carrierFreqHz = 5.0;
     [ObservableProperty] private bool _correctorEnabled = true;
@@ -235,7 +234,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _selectedSpeed = SpeedOptions[0];
         _selectedRateMode = RateModeOptions[0];
         _selectedAdcFilter = AdcFilterOptions[0];
-        _selectedMcuLpfMode = McuLpfOptions[0];
+        _selectedMcuLpfMode = McuLpfOptions[1]; // Adaptive 4th-order Butterworth on MCU
         _selectedInputMux = InputMuxOptions[0];
 
         _dockFactory = new ProvodkaDockFactory(this);
@@ -251,6 +250,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedFormatChanged(FormatOption value)
     {
+        if (value is null) return;
         IsNdmVisible = value.Format == DspFrameFormat.NdmGkRetr;
         ApplyLiveConfigIfRunning();
     }
@@ -263,56 +263,60 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnCarrierFreqHzChanged(double value)
     {
-        // Changing carrier frequency on USO32 requires resending hardware freq byte (0..5) + 500ms settle
-        if (!_isSmpMode)
-            _forceReinitRequested = true;
-        else
-            ApplyLiveConfigIfRunning();
+        // Fast live reconfigure directly on the open USO32 handle (~25 ms V2 / ~130 ms Legacy, zero COM rescan!)
+        ApplyLiveConfigIfRunning();
+        if (IsConnected && !_isSmpMode)
+        {
+            StatusBanner = $"Переключение несущей на {value:0.#} Гц...";
+        }
     }
 
     partial void OnSelectedSpeedChanged(SpeedOption value)
     {
+        if (value is null) return;
         if (_isSmpMode && !string.IsNullOrEmpty(_pendingSmpPath))
         {
             _forceReinitRequested = true;
+            WakeSupervisor();
         }
     }
 
     partial void OnSelectedRateModeChanged(RateModeOption value)
     {
-        if (!_isSmpMode && IsConnected) _forceReinitRequested = true;
+        if (value is null) return;
+        ApplyV2OptionsLiveIfRunning();
     }
 
     partial void OnSelectedAdcFilterChanged(AdcFilterOption value)
     {
-        if (!_isSmpMode && IsConnected) _forceReinitRequested = true;
+        if (value is null) return;
+        ApplyV2OptionsLiveIfRunning();
     }
 
     partial void OnSelectedMcuLpfModeChanged(McuLpfOption value)
     {
-        if (!_isSmpMode && IsConnected) _forceReinitRequested = true;
+        if (value is null) return;
+        ApplyV2OptionsLiveIfRunning();
     }
 
     partial void OnSelectedInputMuxChanged(InputMuxOption value)
     {
-        if (!_isSmpMode && IsConnected) _forceReinitRequested = true;
+        if (value is null) return;
+        ApplyV2OptionsLiveIfRunning();
     }
 
-    partial void OnChopEnabledChanged(bool value)
-    {
-        if (!_isSmpMode && IsConnected) _forceReinitRequested = true;
-    }
+    partial void OnChopEnabledChanged(bool value) => ApplyV2OptionsLiveIfRunning();
 
     public UsoV2Options BuildUsoV2Options() => new()
     {
-        AdaptiveRate = SelectedRateMode.Adaptive,
-        DrCode = SelectedRateMode.DrCode,
-        Decimation = SelectedRateMode.Decimation,
-        AdcFilter = SelectedAdcFilter.FilterCode,
+        AdaptiveRate = SelectedRateMode?.Adaptive ?? true,
+        DrCode = SelectedRateMode?.DrCode ?? 0x08,
+        Decimation = SelectedRateMode?.Decimation ?? 0,
+        AdcFilter = SelectedAdcFilter?.FilterCode ?? 3,
         ChopEnabled = ChopEnabled,
         VbiasEnabled = true,
-        Inpmux = SelectedInputMux.MuxCode,
-        McuLpfMode = SelectedMcuLpfMode.ModeCode,
+        Inpmux = SelectedInputMux?.MuxCode ?? 0x89,
+        McuLpfMode = SelectedMcuLpfMode?.ModeCode ?? 1,
         McuLpfCutoffHz = 0.0,
         McuHpfCutoffHz = CorrectorEnabled ? 0.1 : 0.0,
         BatchSize = 0,
@@ -321,6 +325,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public DspSettings BuildSettings(DspSourceType sourceType, string portOrPath)
     {
+        double fs = (sourceType == DspSourceType.FilePlayer)
+            ? 250.0
+            : (ActiveSampleRateHz > 1.0 ? ActiveSampleRateHz : 250.0);
         return new DspSettings
         {
             SourceType = sourceType,
@@ -328,15 +335,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             UsoBitMode = 32, // Exclusively uco32: 6-byte packets, gain 0x90..0x95
             GainIndex = GainIndex,
             CarrierFreqHz = CarrierFreqHz,
-            SampleRateHz = 250.0,
+            SampleRateHz = fs,
             CorrectorEnabled = CorrectorEnabled,
-            FormatId = SelectedFormat.Format,
+            FormatId = SelectedFormat?.Format ?? DspFrameFormat.StdGk,
             Ncod = Ncod,
             SearchWindowIg = 13,
             DcpThreshold = DcpThreshold,
             EnableStepTrack = EnableStepTrack,
-            PlaybackSpeed = SelectedSpeed.Multiplier,
-            FirFilePath = FirFilePath.Trim()
+            PlaybackSpeed = SelectedSpeed?.Multiplier ?? 1,
+            FirFilePath = string.Empty
         };
     }
 
@@ -377,36 +384,58 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         IsSmpPlayerActive = false;
         ActiveSmpFileName = string.Empty;
         _forceReinitRequested = true;
+        WakeSupervisor();
         StatusBanner = "Принудительный поиск и переинициализация УСО32...";
     }
 
     [RelayCommand]
-    private void RecalibrateUso()
+    private async Task RecalibrateUsoAsync()
     {
-        if (_engine is null || !IsUsoV2Active)
+        IDspEngineClient? eng = _engine;
+        if (eng is null || !IsUsoV2Active)
         {
             StatusBanner = "Самокалибровка доступна только в режиме протокола УСО32 V2.";
             return;
         }
-        DspStatusCode rc = _engine.RecalibrateUso();
+        StatusBanner = "Выполняется самокалибровка смещения ADS1262...";
+        DspStatusCode rc;
+        try
+        {
+            rc = await Task.Run(() => eng.RecalibrateUso());
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
         StatusBanner = rc == DspStatusCode.Ok
             ? "Самокалибровка смещения ADS1262 (6 ступеней PGA) выполнена успешно."
             : $"Ошибка самокалибровки УСО32 V2 ({rc}).";
     }
 
     [RelayCommand]
-    private void ResetUsoAdc()
+    private async Task ResetUsoAdcAsync()
     {
-        if (_engine is null || !IsUsoV2Active)
+        IDspEngineClient? eng = _engine;
+        if (eng is null || !IsUsoV2Active)
         {
             ForceReinitUso();
             return;
         }
-        DspStatusCode rc = _engine.ResetUsoAdc();
+        StatusBanner = "Аппаратный сброс ADS1262...";
+        DspStatusCode rc;
+        try
+        {
+            rc = await Task.Run(() => eng.ResetUsoAdc());
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
         StatusBanner = rc == DspStatusCode.Ok
             ? "Аппаратный сброс ADS1262 выполнен — перезапуск потока..."
             : $"Ошибка сброса АЦП ({rc}) — выполняется переинициализация...";
         _forceReinitRequested = true;
+        WakeSupervisor();
     }
 
     [RelayCommand]
@@ -423,19 +452,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private async Task LoadFirFileAsync()
-    {
-        if (PickFirFileAsync is null)
-            return;
-
-        string? path = await PickFirFileAsync();
-        if (!string.IsNullOrWhiteSpace(path))
-        {
-            SetFirFilePath(path);
-        }
-    }
-
-    [RelayCommand]
     private void CloseSmpAndReturnToUso()
     {
         _isSmpMode = false;
@@ -443,6 +459,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         IsSmpPlayerActive = false;
         ActiveSmpFileName = string.Empty;
         _forceReinitRequested = true;
+        WakeSupervisor();
         StatusBanner = "Плеер .smp закрыт — возврат к автопоиску УСО32...";
     }
 
@@ -477,19 +494,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         IsSmpPlayerActive = true;
         ActiveSmpFileName = Path.GetFileName(path);
         _forceReinitRequested = true;
+        WakeSupervisor();
         StatusBanner = $"Запуск записи .smp: {ActiveSmpFileName}";
-    }
-
-    public void SetFirFilePath(string path)
-    {
-        FirFilePath = path;
-        if (_engine is not null)
-        {
-            int taps = _engine.LoadFirFile(path);
-            StatusBanner = taps > 0
-                ? $"Загружен КИХ-фильтр ({taps} коэфф.): {Path.GetFileName(path)}"
-                : $"Не удалось загрузить КИХ-фильтр: {Path.GetFileName(path)}";
-        }
     }
 
     /// <summary>
@@ -662,11 +668,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 : $"УСО32 #{probe.UsoId} (Legacy uco32) на {probe.PortName} • 57600 8N1 • SIMD: {SimdIsa}";
         });
 
-        // Watchdog loop: monitor hardware stream health, poll V2 diagnostics & auto-reinit on stall or disconnect
+        // Watchdog loop: monitor hardware stream health, reflect live Fs/StepH changes & poll V2 diagnostics
         int diagTick = 0;
         while (!ct.IsCancellationRequested && !_forceReinitRequested && !_isSmpMode)
         {
-            await Task.Delay(350, ct);
+            await WaitWakeupOrDelayAsync(300, ct);
+            if (ct.IsCancellationRequested || _forceReinitRequested || _isSmpMode)
+                break;
 
             bool engineAlive = _engine is not null && _engine.IsRunning;
             long silenceMs = Environment.TickCount64 - Interlocked.Read(ref _lastSampleTickMs);
@@ -686,21 +694,31 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            if (++diagTick >= 6 && _engine is not null)
+            if (_engine is not null)
             {
-                diagTick = 0;
-                if (v2) _engine.RefreshUsoDiagnostics();
+                if (++diagTick >= 6)
+                {
+                    diagTick = 0;
+                    if (v2) _engine.RefreshUsoDiagnostics();
+                }
+
                 UsoRuntimeInfo? liveInfo = _engine.GetUsoInfo();
+                double curH = _engine.CurrentStepH;
                 if (liveInfo is not null)
                 {
+                    double liveFs = liveInfo.ActiveSampleRateHz > 1.0 ? liveInfo.ActiveSampleRateHz : ActiveSampleRateHz;
+                    string liveProto = liveInfo.IsV2
+                        ? $"V2 CRC16 ({liveInfo.FirmwareVersionText}) • {liveFs:0.#} Гц"
+                        : $"Legacy uco32 • {liveFs:0.#} Гц";
                     string diagLine = liveInfo.IsV2
                         ? $"Пак: {liveInfo.RxPackets} • CRC: {liveInfo.CrcErrors} • Проп: {liveInfo.DroppedSamples} • DRDY: {liveInfo.MissedDrdy}"
-                        : $"Пак: {liveInfo.RxPackets} • Режим: Legacy uco32";
+                        : $"Пак: {liveInfo.RxPackets} • Режим: Legacy uco32 ({liveFs:0.#} Гц)";
                     _dispatchToUi(() =>
                     {
                         UsoDiagSummary = diagLine;
-                        if (liveInfo.ActiveSampleRateHz > 1.0)
-                            ActiveSampleRateHz = liveInfo.ActiveSampleRateHz;
+                        ActiveSampleRateHz = liveFs;
+                        ActiveProtocolLabel = liveProto;
+                        StepH = curH;
                     });
                 }
             }
@@ -734,12 +752,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             ActiveProtocolLabel = "Файл .smp • 250 Гц";
             ModeBadge = "ПЛЕЕР .SMP";
             DetectedUsoLabel = $"Файл: {Path.GetFileName(smpPath)}";
+            StepH = _engine?.CurrentStepH ?? StepH;
             StatusBanner = $"Воспроизведение .smp: {Path.GetFileName(smpPath)} ({SelectedSpeed.DisplayName}) • SIMD: {SimdIsa}";
         });
 
         while (!ct.IsCancellationRequested && !_forceReinitRequested && _isSmpMode)
         {
-            await Task.Delay(150, ct);
+            await WaitWakeupOrDelayAsync(150, ct);
+            if (_forceReinitRequested || !_isSmpMode)
+                break;
             if (_engine is null || !_engine.IsRunning)
             {
                 // Ensure final samples of .smp file are always rendered onto oscilloscope & FFT
@@ -753,22 +774,42 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 // Wait until user opens another file, changes speed, or returns to live USO32
                 while (!ct.IsCancellationRequested && !_forceReinitRequested && _isSmpMode)
                 {
-                    await Task.Delay(200, ct);
+                    await WaitWakeupOrDelayAsync(200, ct);
                 }
                 break;
             }
         }
     }
 
+    private void WakeSupervisor()
+    {
+        try
+        {
+            if (_wakeupSignal.CurrentCount == 0)
+                _wakeupSignal.Release();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Ignored during shutdown
+        }
+    }
+
+    private async Task WaitWakeupOrDelayAsync(int timeoutMs, CancellationToken ct)
+    {
+        try
+        {
+            await _wakeupSignal.WaitAsync(timeoutMs, ct);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Ignored during shutdown
+        }
+    }
+
     private async Task DelayWithWakeupAsync(int totalMs, CancellationToken ct)
     {
-        int elapsed = 0;
-        while (elapsed < totalMs && !ct.IsCancellationRequested && !_forceReinitRequested)
-        {
-            int step = Math.Min(100, totalMs - elapsed);
-            await Task.Delay(step, ct);
-            elapsed += step;
-        }
+        if (_forceReinitRequested) return;
+        await WaitWakeupOrDelayAsync(totalMs, ct);
     }
 
     private bool TryStartEngine(DspSettings settings, out DspStatusCode status)
@@ -779,11 +820,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _dispatchToUi(() => SimdIsa = isa);
 
         _engine.SetUsoV2Options(BuildUsoV2Options());
-
-        if (!string.IsNullOrWhiteSpace(settings.FirFilePath))
-        {
-            _engine.LoadFirFile(settings.FirFilePath);
-        }
 
         _engine.ToolfaceReceived += OnToolfaceReceived;
         _engine.VectorDecoded += OnVectorDecoded;
@@ -815,12 +851,41 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void ApplyLiveConfigIfRunning()
     {
-        if (_engine is null)
+        IDspEngineClient? eng = _engine;
+        if (eng is null)
             return;
 
         DspSourceType src = _isSmpMode ? DspSourceType.FilePlayer : DspSourceType.LegacySerial;
         string path = _isSmpMode ? (_pendingSmpPath ?? string.Empty) : DetectedPort;
-        _engine.Configure(BuildSettings(src, path));
+        try
+        {
+            eng.Configure(BuildSettings(src, path));
+            StepH = eng.CurrentStepH;
+        }
+        catch (ObjectDisposedException)
+        {
+            // Engine is being reinitialized by supervisor; new session will pick up updated settings.
+        }
+    }
+
+    private void ApplyV2OptionsLiveIfRunning()
+    {
+        IDspEngineClient? eng = _engine;
+        if (eng is null || _isSmpMode)
+            return;
+
+        try
+        {
+            eng.SetUsoV2Options(BuildUsoV2Options());
+            if (IsUsoV2Active)
+            {
+                StatusBanner = "Применение параметров тракта ADS1262 (УСО32 V2)...";
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // Engine is being reinitialized by supervisor; new session will pick up updated V2 options.
+        }
     }
 
     private void TryQueryNativeIsa()
@@ -949,16 +1014,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void DisposeEngine()
     {
-        if (_engine is null)
+        IDspEngineClient? eng = _engine;
+        _engine = null;
+        if (eng is null)
             return;
 
-        _engine.ToolfaceReceived -= OnToolfaceReceived;
-        _engine.VectorDecoded -= OnVectorDecoded;
-        _engine.FrameCompleted -= OnFrameCompleted;
-        _engine.SignalBlockReceived -= OnSignalBlockReceived;
-        _engine.Stop();
-        _engine.Dispose();
-        _engine = null;
+        eng.ToolfaceReceived -= OnToolfaceReceived;
+        eng.VectorDecoded -= OnVectorDecoded;
+        eng.FrameCompleted -= OnFrameCompleted;
+        eng.SignalBlockReceived -= OnSignalBlockReceived;
+        eng.Stop();
+        eng.Dispose();
     }
 
     public void Dispose()
@@ -978,6 +1044,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             // Ignore cancellation exceptions on shutdown
         }
         _supervisorCts.Dispose();
+        _wakeupSignal.Dispose();
         DisposeEngine();
     }
 }

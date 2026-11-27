@@ -260,7 +260,7 @@ public sealed class UsoV2Options
     public bool ChopEnabled { get; set; } = false;
     public bool VbiasEnabled { get; set; } = true;
     public int Inpmux { get; set; } = 0x89;       // AIN8/AIN9 seismic transformer
-    public int McuLpfMode { get; set; } = 0;      // 0 = Bypass (linear phase for PC FIR)
+    public int McuLpfMode { get; set; } = 1;      // 1 = Adaptive 4th-order Butterworth on MCU
     public double McuLpfCutoffHz { get; set; } = 0.0;
     public double McuHpfCutoffHz { get; set; } = 0.1;
     public int BatchSize { get; set; } = 0;       // 0 = auto (~25 ms)

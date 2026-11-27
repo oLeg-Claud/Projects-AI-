@@ -488,7 +488,7 @@ void test_uso_v2_protocol_and_abi() {
     dsp_uso_v2_options_default(&opts);
     CHECK(opts.adaptive_rate == 1);
     CHECK(opts.adc_filter == dsp::usov2::FLT_SINC4);
-    CHECK(opts.mcu_lpf_mode == dsp::usov2::LPF_BYPASS);
+    CHECK(opts.mcu_lpf_mode == dsp::usov2::LPF_BUTTER4);
 
     DspConfig cfg{};
     dsp_config_default(&cfg);
@@ -505,6 +505,103 @@ void test_uso_v2_protocol_and_abi() {
     std::printf("[PASS] test_uso_v2_protocol_and_abi (V2Options=56B, RuntimeInfo=96B, CRC16 batch OK)\n");
 }
 
+/* Test 9: Real downhole .smp SP lock (NO KIH*.dat!), DC bias immunity, and non-blocking format switch */
+void test_real_downhole_smp_sp_and_nonblocking_configure() {
+    /* 9a. DC-offset immunity: add +5e7 DC bias to 1e5-amplitude signal -> still locks SP >= 90% */
+    {
+        DspConfig cfg{};
+        dsp_config_default(&cfg);
+        cfg.source_type     = DSP_SRC_LEGACY_SERIAL;
+        cfg.sample_rate_hz  = 400.0;
+        cfg.carrier_freq_hz = 5.0;
+        cfg.format_id       = DSP_FMT_STD_GK;
+        cfg.dcp_threshold   = 70;
+
+        int frames = 0;
+        int sync_pct = 0;
+        DspCallbacks cbs{};
+        struct Cap { int* f; int* s; } cap{ &frames, &sync_pct };
+        cbs.user_data = &cap;
+        cbs.on_frame = [](const DspFrameData* fr, void* ud) {
+            auto* c = static_cast<Cap*>(ud);
+            (*c->f)++;
+            *c->s = fr->sync_corr_pct;
+        };
+
+        DspEngine* eng = dsp_create(&cfg, &cbs);
+        CHECK(eng != nullptr);
+        std::vector<uint8_t> vecs(39, 5);
+        const double step_h = dsp::compute_nominal_step_h(400.0, 5.0, DSP_SRC_LEGACY_SERIAL);
+        auto sig = synthesize_frames(0, 1, {vecs}, step_h, 1e5, 5e3, 123);
+        for (double& s : sig) s += 5.0e7; /* huge DC bias */
+        CHECK(dsp_push_samples(eng, sig.data(), static_cast<int32_t>(sig.size()), 0) == DSP_OK);
+        CHECK(frames == 1);
+        CHECK(sync_pct >= 90);
+        dsp_destroy(eng);
+    }
+
+    /* 9b. Real downhole recording 24-08-23 10-35-20.smp @ 16 Hz WITHOUT any KIH*.dat file */
+    {
+        DspConfig cfg{};
+        dsp_config_default(&cfg);
+        cfg.source_type     = DSP_SRC_FILE_PLAYER;
+        cfg.uso_bit_mode    = 32;
+        cfg.sample_rate_hz  = 250.0;
+        cfg.carrier_freq_hz = 16.0;
+        cfg.format_id       = DSP_FMT_STD_GK;
+        cfg.ncod            = 0;
+        cfg.dcp_threshold   = 55;
+        cfg.playback_speed  = 0; /* MAX speed */
+        std::snprintf(cfg.port_or_path, sizeof(cfg.port_or_path), "../tek/smp/24-08-23 10-35-20.smp");
+
+        struct RealCap {
+            int frames = 0;
+            int best_sync = 0;
+        } rcap;
+
+        DspCallbacks cbs{};
+        cbs.user_data = &rcap;
+        cbs.on_frame = [](const DspFrameData* fr, void* ud) {
+            auto* c = static_cast<RealCap*>(ud);
+            c->frames++;
+            if (fr->sync_corr_pct > c->best_sync) c->best_sync = fr->sync_corr_pct;
+        };
+
+        DspEngine* eng = dsp_create(&cfg, &cbs);
+        CHECK(eng != nullptr);
+        CHECK(dsp_start(eng) == DSP_OK);
+
+        for (int wait = 0; wait < 200 && dsp_is_running(eng); ++wait) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        dsp_stop(eng);
+        CHECK(rcap.frames >= 1);
+        CHECK(rcap.best_sync >= 80);
+
+        /* 9c. Non-blocking live format switch during real-time 1x playback (must return in < 25 ms) */
+        cfg.playback_speed = 1;
+        CHECK(dsp_configure(eng, &cfg) == DSP_OK);
+        CHECK(dsp_start(eng) == DSP_OK);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+        const int32_t fmts[] = { DSP_FMT_NDM_GK_RETR, DSP_FMT_GK_RETR, DSP_FMT_STD, DSP_FMT_GEOMASH, DSP_FMT_STD_GK };
+        double worst_ms = 0.0;
+        for (int32_t fmt : fmts) {
+            cfg.format_id = fmt;
+            auto t0 = std::chrono::steady_clock::now();
+            CHECK(dsp_configure(eng, &cfg) == DSP_OK);
+            double dt_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            if (dt_ms > worst_ms) worst_ms = dt_ms;
+        }
+        CHECK(worst_ms < 25.0);
+        dsp_destroy(eng);
+
+        g_tests_passed++;
+        std::printf("[PASS] test_real_downhole_smp_sp_and_nonblocking_configure (real SP=%d%%, frames=%d, max_cfg=%.2fms)\n",
+                    rcap.best_sync, rcap.frames, worst_ms);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -517,6 +614,7 @@ int main() {
     test_geomash_crc32_format30();
     test_real_smp_file_player();
     test_uso_v2_protocol_and_abi();
+    test_real_downhole_smp_sp_and_nonblocking_configure();
     std::printf("=== ALL %d TESTS PASSED ===\n", g_tests_passed);
     return 0;
 }

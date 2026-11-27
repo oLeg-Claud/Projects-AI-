@@ -88,33 +88,45 @@ inline uint8_t legacy_gain_command_byte(int32_t gain_index, int32_t bit_mode) {
 }
 
 /**
+ * Exact downhole crystal-divider frequency multiplier pw[7] from TRAEKT2k.cpp line 220.
+ * Legacy downhole tools generate half-periods from a binary crystal divider:
+ *   TKADR5 = 201.326592 s for 512 half-periods at 1.25 Hz -> 0.393216 s/half-period at pw=1.
+ * For example, nominal "5 Hz" (pw=4) is actually 5.086263 Hz (+1.725%) and "16 Hz" (pw=12.8)
+ * is 16.276042 Hz (+1.725%). Using nominal integer Hz causes >2 chips of phase slip across
+ * the 128-chip Sync Preamble and prevents SP lock!
+ */
+inline double exact_downhole_pw(double carrier_freq_hz) {
+    if (carrier_freq_hz >= 13.0) return 12.8;           /* 16 Hz  -> 16.27604 Hz */
+    if (carrier_freq_hz >= 8.5)  return 8.0;            /* 10 Hz  -> 10.17253 Hz */
+    if (carrier_freq_hz >= 6.0)  return 5.6568424949;   /* 7 Hz   ->  7.19305 Hz */
+    if (carrier_freq_hz >= 4.2)  return 4.0;            /* 5 Hz   ->  5.08626 Hz */
+    if (carrier_freq_hz >= 3.0)  return 2.828427124745; /* 3.6 Hz ->  3.59653 Hz */
+    if (carrier_freq_hz >= 2.1)  return 2.0;            /* 2.5 Hz ->  2.54313 Hz */
+    return 1.41421356237;                               /* 1.8 Hz ->  1.79827 Hz */
+}
+
+/**
  * Compute nominal resampling step H that maps input sample_rate_hz onto virtual grid
- * DLPOLr = 13 samples per half-period (bit) at carrier_freq_hz.
- *
- * One chip (full period of carrier) = 2 half-periods (Manchester).
- * Half-period rate = 2 * carrier_freq_hz.
- * Virtual sample rate = 2 * carrier_freq_hz * DLPOL_R.
- * Step H = input_sample_rate / virtual_sample_rate.
- *
- * Examples:
- * - Legacy USO (250 Hz) at 5 Hz carrier: 250 / (2 * 5 * 13) = 250 / 130 = 1.923077
- * - New 32-bit USO (8 sps/bit = 16 * f_carrier): (16 * f) / (26 * f) = 8 / 13 = 0.615385
+ * DLPOLr = 13 samples per half-period (bit) using exact TRAEKT2k.cpp timing.
  */
 inline double compute_nominal_step_h(double sample_rate_hz, double carrier_freq_hz, int32_t source_type) {
     if (source_type == DSP_SRC_NEW_ADC32) {
         return 8.0 / static_cast<double>(DSP_DLPOL_R);
     }
-    const double virtual_rate = 2.0 * carrier_freq_hz * static_cast<double>(DSP_DLPOL_R);
-    if (virtual_rate <= 1e-6 || sample_rate_hz <= 1e-6) return 1.0;
-    return sample_rate_hz / virtual_rate;
+    if (sample_rate_hz <= 1e-6 || carrier_freq_hz <= 1e-6) return 1.0;
+    constexpr double kHalfPeriodAtPw1Sec = 201.326592 / 512.0; /* 0.393216 s */
+    const double pw = exact_downhole_pw(carrier_freq_hz);
+    return sample_rate_hz * (kHalfPeriodAtPw1Sec / (static_cast<double>(DSP_DLPOL_R) * pw));
 }
 
 /**
- * High-precision SIMD-accelerated double dot product & energy computation.
+ * High-precision SIMD-accelerated double dot product, sum, and energy computation.
  * Uses AVX2 -> SSE2 -> strict double scalar fallback (prevents 32-bit ADC precision loss).
  */
 double simd_dot_double(const double* a, const double* b, size_t len);
 double simd_energy_double(const double* a, size_t len);
+double simd_sum_double(const double* a, size_t len);
+double simd_centered_energy_double(const double* a, size_t len, double mean);
 const char* active_simd_isa_name();
 
 /**

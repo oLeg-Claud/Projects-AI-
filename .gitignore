@@ -40,3 +40,7 @@ ProvodkaNG/**/obj/
 ProvodkaNG/.vs/
 ProvodkaNG/**/*.user
 
+# Exclude PlatformIO build cache and Python bytecode (keep uso_emb/dist/ binaries)
+uso_emb/.pio/
+uso_emb/**/__pycache__/
+

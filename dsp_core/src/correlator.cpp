@@ -120,6 +120,90 @@ double simd_energy_double(const double* a, size_t len) {
     return sum;
 }
 
+double simd_sum_double(const double* a, size_t len) {
+    size_t i = 0;
+    double sum = 0.0;
+
+#if defined(__AVX2__)
+    const size_t vec_end = len & ~static_cast<size_t>(7);
+    __m256d acc0 = _mm256_setzero_pd();
+    __m256d acc1 = _mm256_setzero_pd();
+    for (; i < vec_end; i += 8) {
+        acc0 = _mm256_add_pd(acc0, _mm256_loadu_pd(a + i));
+        acc1 = _mm256_add_pd(acc1, _mm256_loadu_pd(a + i + 4));
+    }
+    acc0 = _mm256_add_pd(acc0, acc1);
+    alignas(32) double tmp[4];
+    _mm256_store_pd(tmp, acc0);
+    sum = (tmp[0] + tmp[1]) + (tmp[2] + tmp[3]);
+#elif defined(__SSE2__)
+    const size_t vec_end = len & ~static_cast<size_t>(3);
+    __m128d acc0 = _mm_setzero_pd();
+    __m128d acc1 = _mm_setzero_pd();
+    for (; i < vec_end; i += 4) {
+        acc0 = _mm_add_pd(acc0, _mm_loadu_pd(a + i));
+        acc1 = _mm_add_pd(acc1, _mm_loadu_pd(a + i + 2));
+    }
+    acc0 = _mm_add_pd(acc0, acc1);
+    alignas(16) double tmp[2];
+    _mm_store_pd(tmp, acc0);
+    sum = tmp[0] + tmp[1];
+#endif
+
+    for (; i < len; ++i) {
+        sum += a[i];
+    }
+    return sum;
+}
+
+double simd_centered_energy_double(const double* a, size_t len, double mean) {
+    size_t i = 0;
+    double sum = 0.0;
+
+#if defined(__AVX2__)
+    const size_t vec_end = len & ~static_cast<size_t>(7);
+    const __m256d vmean = _mm256_set1_pd(mean);
+    __m256d acc0 = _mm256_setzero_pd();
+    __m256d acc1 = _mm256_setzero_pd();
+    for (; i < vec_end; i += 8) {
+        __m256d d0 = _mm256_sub_pd(_mm256_loadu_pd(a + i), vmean);
+        __m256d d1 = _mm256_sub_pd(_mm256_loadu_pd(a + i + 4), vmean);
+  #if defined(__FMA__)
+        acc0 = _mm256_fmadd_pd(d0, d0, acc0);
+        acc1 = _mm256_fmadd_pd(d1, d1, acc1);
+  #else
+        acc0 = _mm256_add_pd(acc0, _mm256_mul_pd(d0, d0));
+        acc1 = _mm256_add_pd(acc1, _mm256_mul_pd(d1, d1));
+  #endif
+    }
+    acc0 = _mm256_add_pd(acc0, acc1);
+    alignas(32) double tmp[4];
+    _mm256_store_pd(tmp, acc0);
+    sum = (tmp[0] + tmp[1]) + (tmp[2] + tmp[3]);
+#elif defined(__SSE2__)
+    const size_t vec_end = len & ~static_cast<size_t>(3);
+    const __m128d vmean = _mm_set1_pd(mean);
+    __m128d acc0 = _mm_setzero_pd();
+    __m128d acc1 = _mm_setzero_pd();
+    for (; i < vec_end; i += 4) {
+        __m128d d0 = _mm_sub_pd(_mm_loadu_pd(a + i), vmean);
+        __m128d d1 = _mm_sub_pd(_mm_loadu_pd(a + i + 2), vmean);
+        acc0 = _mm_add_pd(acc0, _mm_mul_pd(d0, d0));
+        acc1 = _mm_add_pd(acc1, _mm_mul_pd(d1, d1));
+    }
+    acc0 = _mm_add_pd(acc0, acc1);
+    alignas(16) double tmp[2];
+    _mm_store_pd(tmp, acc0);
+    sum = tmp[0] + tmp[1];
+#endif
+
+    for (; i < len; ++i) {
+        const double d = a[i] - mean;
+        sum += d * d;
+    }
+    return sum;
+}
+
 /* ============================================================================
  * SoftCorrelator Implementation
  * ============================================================================ */
@@ -179,14 +263,18 @@ SyncSearchResult SoftCorrelator::search_sync_preamble(
     double best_corr = 0.0;
     size_t best_lag  = 0;
 
-    /* Prefix-sum energy would accumulate cancellation error on 32-bit ADC values;
-     * SIMD energy over 1664 doubles is both exact and takes < 0.25 microseconds. */
+    /* Zero-mean (DC-immune) SIMD Pearson correlation over 1664 doubles:
+     * immune to ADC DC bias even when HPF/corrector is off or still settling. */
+    const double tpl_sum = simd_sum_double(sync_tpl_.data(), DSP_SYNC_SAMPLES);
+    constexpr double inv_sync_n = 1.0 / static_cast<double>(DSP_SYNC_SAMPLES);
+
     for (size_t lag = 0; lag < num_lags; ++lag) {
         const double* seg = buffer + lag;
-        const double xkv = simd_energy_double(seg, DSP_SYNC_SAMPLES);
+        const double mean = simd_sum_double(seg, DSP_SYNC_SAMPLES) * inv_sync_n;
+        const double xkv  = simd_centered_energy_double(seg, DSP_SYNC_SAMPLES, mean);
         if (xkv <= 1e-18) continue;
 
-        const double dot  = simd_dot_double(seg, sync_tpl_.data(), DSP_SYNC_SAMPLES);
+        const double dot  = simd_dot_double(seg, sync_tpl_.data(), DSP_SYNC_SAMPLES) - mean * tpl_sum;
         const double corr = dot / std::sqrt(sync_energy_ * xkv);
         const double a    = std::fabs(corr);
         if (a > best_abs) {
@@ -219,11 +307,13 @@ VectorDecodeResult SoftCorrelator::decode_vector(
 
     const int32_t ig = std::max<int32_t>(0, search_ig);
     const double phase_sign = (frame_phase < 0) ? -1.0 : 1.0;
+    constexpr double inv_vec_n = 1.0 / static_cast<double>(DSP_VEC_SAMPLES);
 
     /* Stage 1 (KORDAT2k.cpp lines 90-115):
-     * Evaluate all 16 RM(1,4) templates at nominal offset `ig` */
+     * Evaluate all 16 RM(1,4) templates at nominal offset `ig` (DC-centered) */
     const double* nominal_seg = window_ptr + ig;
-    const double nominal_xkv = simd_energy_double(nominal_seg, DSP_VEC_SAMPLES);
+    const double nominal_mean = simd_sum_double(nominal_seg, DSP_VEC_SAMPLES) * inv_vec_n;
+    const double nominal_xkv  = simd_centered_energy_double(nominal_seg, DSP_VEC_SAMPLES, nominal_mean);
     if (nominal_xkv <= 1e-18) return res;
 
     int32_t best_code4 = 0;
@@ -263,7 +353,8 @@ VectorDecodeResult SoftCorrelator::decode_vector(
         const int32_t total_steps = 2 * ig + 1;
         for (int32_t s = 0; s < total_steps; ++s) {
             const double* seg = window_ptr + s;
-            const double xkv = simd_energy_double(seg, DSP_VEC_SAMPLES);
+            const double mean = simd_sum_double(seg, DSP_VEC_SAMPLES) * inv_vec_n;
+            const double xkv  = simd_centered_energy_double(seg, DSP_VEC_SAMPLES, mean);
             if (xkv <= 1e-18) continue;
             const double dot = simd_dot_double(seg, win_tpl.data(), DSP_VEC_SAMPLES);
             const double corr = (dot * phase_sign) / std::sqrt(win_en * xkv);

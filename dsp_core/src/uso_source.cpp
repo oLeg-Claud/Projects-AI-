@@ -523,7 +523,7 @@ bool LegacySerialUsoSource::write_bytes(const uint8_t* data, int32_t len) {
 }
 
 int32_t LegacySerialUsoSource::read_exact(uint8_t* buf, int32_t len) {
-    return serial_read_bytes(handle_, buf, len, 80);
+    return serial_read_bytes(handle_, buf, len, 25);
 }
 
 bool LegacySerialUsoSource::send_v2_cmd(
@@ -564,50 +564,7 @@ bool LegacySerialUsoSource::wait_v2_response(
     return false;
 }
 
-bool LegacySerialUsoSource::try_open_v2(const DspConfig& cfg) {
-    v2_parser_.reset();
-    usov2::HelloRsp hello{};
-
-    auto do_hello = [&]() -> bool {
-        uint16_t seq = 0;
-        if (!send_v2_cmd(usov2::CMD_HELLO, nullptr, 0u, &seq)) return false;
-        usov2::Frame f{};
-        if (!wait_v2_response(usov2::RSP_HELLO, seq, f, 100)) return false;
-        return usov2::unpack_hello_rsp(f.payload, f.payload_len, hello);
-    };
-
-    if (!do_hello()) {
-        /* If device was mid-stream, stop it cleanly and retry HELLO once */
-        (void)send_v2_cmd(usov2::CMD_STOP, nullptr, 0u);
-        std::this_thread::sleep_for(std::chrono::milliseconds(25));
-        purge_serial_handle(handle_);
-        v2_parser_.reset();
-        if (!do_hello()) {
-            return false;
-        }
-    }
-
-    runtime_info_.protocol_version = 2;
-    runtime_info_.uso_id           = static_cast<int32_t>(hello.device_id);
-    runtime_info_.fw_major         = static_cast<int32_t>(hello.fw_major);
-    runtime_info_.fw_minor         = static_cast<int32_t>(hello.fw_minor);
-    runtime_info_.fw_patch         = static_cast<int32_t>(hello.fw_patch);
-    runtime_info_.adc_id           = static_cast<int32_t>(hello.adc_id);
-    runtime_info_.adc_clock_hz     = hello.adc_clock_hz;
-    runtime_info_.hw_fault         = static_cast<int32_t>(hello.fault);
-
-    /* If ADC had a latched fault, attempt one controlled soft-reset via V2! */
-    if (!hello.ready || hello.fault) {
-        uint16_t rseq = 0;
-        if (send_v2_cmd(usov2::CMD_RESET_ADC, nullptr, 0u, &rseq)) {
-            usov2::Frame rf{};
-            if (wait_v2_response(usov2::RSP_ACK, rseq, rf, 2500) &&
-                rf.payload_len >= 2u && rf.payload[1] == usov2::ST_OK) {
-                runtime_info_.hw_fault = 0;
-            }
-        }
-    }
-
+bool LegacySerialUsoSource::start_v2_stream(const DspConfig& cfg) {
     /* Assemble V2 configuration combining DspConfig + DspUsoV2Options */
     usov2::WireConfig wcfg{};
     double f_mhz = std::round(std::max(0.5, cfg.carrier_freq_hz) * 1000.0);
@@ -669,6 +626,53 @@ bool LegacySerialUsoSource::try_open_v2(const DspConfig& cfg) {
     return true;
 }
 
+bool LegacySerialUsoSource::try_open_v2(const DspConfig& cfg) {
+    v2_parser_.reset();
+    usov2::HelloRsp hello{};
+
+    auto do_hello = [&]() -> bool {
+        uint16_t seq = 0;
+        if (!send_v2_cmd(usov2::CMD_HELLO, nullptr, 0u, &seq)) return false;
+        usov2::Frame f{};
+        if (!wait_v2_response(usov2::RSP_HELLO, seq, f, 100)) return false;
+        return usov2::unpack_hello_rsp(f.payload, f.payload_len, hello);
+    };
+
+    if (!do_hello()) {
+        /* If device was mid-stream, stop it cleanly and retry HELLO once */
+        (void)send_v2_cmd(usov2::CMD_STOP, nullptr, 0u);
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        purge_serial_handle(handle_);
+        v2_parser_.reset();
+        if (!do_hello()) {
+            return false;
+        }
+    }
+
+    runtime_info_.protocol_version = 2;
+    runtime_info_.uso_id           = static_cast<int32_t>(hello.device_id);
+    runtime_info_.fw_major         = static_cast<int32_t>(hello.fw_major);
+    runtime_info_.fw_minor         = static_cast<int32_t>(hello.fw_minor);
+    runtime_info_.fw_patch         = static_cast<int32_t>(hello.fw_patch);
+    runtime_info_.adc_id           = static_cast<int32_t>(hello.adc_id);
+    runtime_info_.adc_clock_hz     = hello.adc_clock_hz;
+    runtime_info_.hw_fault         = static_cast<int32_t>(hello.fault);
+
+    /* If ADC had a latched fault, attempt one controlled soft-reset via V2! */
+    if (!hello.ready || hello.fault) {
+        uint16_t rseq = 0;
+        if (send_v2_cmd(usov2::CMD_RESET_ADC, nullptr, 0u, &rseq)) {
+            usov2::Frame rf{};
+            if (wait_v2_response(usov2::RSP_ACK, rseq, rf, 2500) &&
+                rf.payload_len >= 2u && rf.payload[1] == usov2::ST_OK) {
+                runtime_info_.hw_fault = 0;
+            }
+        }
+    }
+
+    return start_v2_stream(cfg);
+}
+
 int32_t LegacySerialUsoSource::open(const DspConfig& cfg) {
     close();
     bit_mode_   = (cfg.uso_bit_mode == 24) ? 24 : 32;
@@ -677,7 +681,7 @@ int32_t LegacySerialUsoSource::open(const DspConfig& cfg) {
     v2_active_  = false;
     std::memset(&runtime_info_, 0, sizeof(runtime_info_));
 
-    handle_ = open_serial_57600_8n1(cfg.port_or_path, 120);
+    handle_ = open_serial_57600_8n1(cfg.port_or_path, 40);
     if (handle_ < 0) return DSP_ERR_PORT_OPEN;
 
     purge_serial_handle(handle_);
@@ -687,7 +691,22 @@ int32_t LegacySerialUsoSource::open(const DspConfig& cfg) {
         return DSP_OK;
     }
 
-    /* Legacy fallback initialization sequence (YCO8_1.cpp lines 67-99, uco32) */
+    /* Legacy fallback: probe optional 0xA1 INFO to distinguish 400 Hz STM32 v2.x from 250 Hz legacy USO */
+    double legacy_fs = 250.0;
+    purge_serial_handle(handle_);
+    if (write_byte(0xA1)) {
+        uint8_t info_buf[96]{};
+        int32_t info_n = serial_read_bytes(handle_, info_buf, sizeof(info_buf) - 1, 35);
+        if (info_n > 4 && info_buf[0] == 0xA1) {
+            info_buf[info_n] = 0;
+            const char* text = reinterpret_cast<const char*>(info_buf + 1);
+            if (std::strstr(text, "400Hz") != nullptr || std::strstr(text, "400hz") != nullptr) {
+                legacy_fs = 400.0;
+            }
+        }
+    }
+
+    /* Legacy initialization sequence (YCO8_1.cpp lines 67-99, uco32) */
     purge_serial_handle(handle_);
     const uint8_t gain_cmd = legacy_gain_command_byte(cfg.gain_index, bit_mode_);
     const uint8_t freq_cmd = legacy_freq_command_byte(cfg.carrier_freq_hz);
@@ -696,12 +715,45 @@ int32_t LegacySerialUsoSource::open(const DspConfig& cfg) {
     if (!write_byte(gain_cmd)) { close(); return DSP_ERR_PORT_OPEN; }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     if (!write_byte(freq_cmd)) { close(); return DSP_ERR_PORT_OPEN; }
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
     if (!write_byte(corr_cmd)) { close(); return DSP_ERR_PORT_OPEN; }
 
     runtime_info_.protocol_version      = 1;
-    runtime_info_.active_sample_rate_hz = (cfg.sample_rate_hz > 1.0) ? cfg.sample_rate_hz : 250.0;
-    runtime_info_.hw_sample_rate_hz     = runtime_info_.active_sample_rate_hz;
+    runtime_info_.active_sample_rate_hz = legacy_fs;
+    runtime_info_.hw_sample_rate_hz     = legacy_fs;
+    return DSP_OK;
+}
+
+int32_t LegacySerialUsoSource::reconfigure(const DspConfig& cfg) {
+    if (!is_open()) return DSP_ERR_PORT_OPEN;
+    bit_mode_   = (cfg.uso_bit_mode == 24) ? 24 : 32;
+    gain_index_ = std::clamp(cfg.gain_index, 0, 5);
+
+    if (v2_active_) {
+        /* Fast V2 live restart on the already-open handle (~25 ms, zero COM rescan) */
+        (void)send_v2_cmd(usov2::CMD_STOP, nullptr, 0u);
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+        purge_serial_handle(handle_);
+        v2_parser_.reset();
+        v2_sample_queue_.clear();
+        return start_v2_stream(cfg) ? DSP_OK : DSP_ERR_PORT_OPEN;
+    }
+
+    /* Fast Legacy frequency/gain/corr restart on the already-open handle (~130 ms, zero COM rescan) */
+    if (!write_byte(0x10)) return DSP_ERR_PORT_OPEN;
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    purge_serial_handle(handle_);
+    synced_ = false;
+
+    const uint8_t gain_cmd = legacy_gain_command_byte(cfg.gain_index, bit_mode_);
+    const uint8_t freq_cmd = legacy_freq_command_byte(cfg.carrier_freq_hz);
+    const uint8_t corr_cmd = cfg.corrector_enabled ? 0x71 : 0x72;
+
+    if (!write_byte(gain_cmd)) return DSP_ERR_PORT_OPEN;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (!write_byte(freq_cmd)) return DSP_ERR_PORT_OPEN;
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    if (!write_byte(corr_cmd)) return DSP_ERR_PORT_OPEN;
     return DSP_OK;
 }
 
@@ -825,7 +877,7 @@ int32_t LegacySerialUsoSource::read_samples_v2(
     if (count >= max_samples) return count;
 
     uint8_t raw[128]{};
-    int32_t got = serial_read_bytes(handle_, raw, sizeof(raw), 60);
+    int32_t got = serial_read_bytes(handle_, raw, sizeof(raw), 25);
     if (got <= 0) return count;
 
     usov2::Frame frame{};

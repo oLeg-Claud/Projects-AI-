@@ -8,11 +8,22 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
+
+struct PendingCallbacks {
+    std::vector<double>           raw_copy;
+    std::vector<double>           filtered_copy;
+    int32_t                       overflow_flag{0};
+    bool                          has_signal{false};
+    std::vector<DspVectorEvent>   vectors;
+    std::vector<DspToolfaceEvent> toolfaces;
+    std::vector<DspFrameData>     frames;
+};
 
 struct DspEngine {
     enum class State {
@@ -22,6 +33,7 @@ struct DspEngine {
 
     DspConfig       cfg{};
     DspUsoV2Options v2_opts{};
+    DspUsoRuntimeInfo cached_uso_info{};
     DspCallbacks    callbacks{};
     dsp::FirFilter            fir;
     dsp::VirtualGridResampler resampler;
@@ -31,7 +43,21 @@ struct DspEngine {
     std::unique_ptr<dsp::IUsoSource> source;
     std::thread       worker;
     std::atomic<bool> running{false};
-    std::mutex        mutex;
+    std::mutex        mutex; /* Protects DSP state & pending flags ONLY — NEVER held during I/O or callbacks */
+    std::condition_variable sync_op_cv;
+
+    /* Pending hardware operations executed exclusively by worker thread (zero UI blocking) */
+    bool     pending_gain{false};
+    int32_t  pending_gain_val{0};
+    bool     pending_corr{false};
+    bool     pending_corr_val{true};
+    bool     pending_v2_opts{false};
+    bool     pending_reconfig{false};
+    bool     pending_diag{false};
+    bool     pending_recal{false};
+    bool     pending_reset_adc{false};
+    bool     sync_op_done{false};
+    int32_t  sync_op_result{DSP_OK};
 
     /* Streaming DSP buffers */
     std::vector<double> filtered_scratch;
@@ -76,8 +102,9 @@ struct DspEngine {
         }
     }
 
-    void process_virtual_buffer_locked() {
+    void process_virtual_buffer_locked(PendingCallbacks& out_cb) {
         const int32_t ig = std::max<int32_t>(0, cfg.search_window_ig);
+        const int32_t edge_margin = std::max<int32_t>(ig, 16);
         const int32_t frame_virt = DSP_SYNC_SAMPLES + total_phys_vecs * DSP_VEC_SAMPLES;
 
         bool progress = true;
@@ -86,7 +113,7 @@ struct DspEngine {
 
             if (state == State::SearchingSync) {
                 /* Wait until we have at least one sync preamble + search margin */
-                const size_t min_search = static_cast<size_t>(DSP_SYNC_SAMPLES + 2 * std::max<int32_t>(ig, 16));
+                const size_t min_search = static_cast<size_t>(DSP_SYNC_SAMPLES + 2 * edge_margin);
                 if (virtual_buf.size() < min_search) break;
 
                 /* Search within first chunk (bounded to keep latency low) */
@@ -94,6 +121,7 @@ struct DspEngine {
                     virtual_buf.size(),
                     static_cast<size_t>(DSP_SYNC_SAMPLES + DSP_VEC_SAMPLES)
                 );
+                const size_t num_lags = search_len - static_cast<size_t>(DSP_SYNC_SAMPLES) + 1;
 
                 const auto sync_res = correlator.search_sync_preamble(
                     virtual_buf.data(),
@@ -102,6 +130,20 @@ struct DspEngine {
                 );
 
                 if (sync_res.found) {
+                    /* If peak sits right on the trailing edge of search_len, wait for `edge_margin`
+                     * more virtual samples so we lock onto the exact crest instead of its rising shoulder. */
+                    if (num_lags > static_cast<size_t>(edge_margin) &&
+                        sync_res.peak_index >= static_cast<int32_t>(num_lags) - edge_margin &&
+                        virtual_buf.size() < search_len + static_cast<size_t>(edge_margin)) {
+                        const size_t safe_drop = (sync_res.peak_index > edge_margin)
+                                                     ? static_cast<size_t>(sync_res.peak_index - edge_margin)
+                                                     : 0;
+                        if (safe_drop > 0) {
+                            discard_prefix(safe_drop);
+                        }
+                        break;
+                    }
+
                     const int64_t abs_sync = total_virtual_consumed + sync_res.peak_index;
                     if (last_sync_abs_pos >= 0) {
                         const int64_t measured_period = abs_sync - last_sync_abs_pos;
@@ -136,7 +178,7 @@ struct DspEngine {
                     state    = State::DecodingVectors;
                     progress = true;
                 } else {
-                    /* Advance buffer by one vector length to avoid re-scanning old samples */
+                    /* Advance buffer past evaluated lags */
                     const size_t step_drop = search_len - static_cast<size_t>(DSP_SYNC_SAMPLES) + 1;
                     discard_prefix(step_drop);
                     progress = (virtual_buf.size() >= min_search);
@@ -167,7 +209,6 @@ struct DspEngine {
                             std::chrono::steady_clock::now() - t0
                         ).count();
 
-                        /* Emit vector diagnostic callback if registered */
                         if (callbacks.on_vector) {
                             DspVectorEvent vevt{};
                             vevt.frame_number    = frame_number;
@@ -178,7 +219,7 @@ struct DspEngine {
                             vevt.peak_offset_ig  = vres.peak_offset_ig;
                             vevt.phase_polarity  = frame_phase;
                             std::memcpy(vevt.code_scores_pct, vres.code_scores_pct, sizeof(vevt.code_scores_pct));
-                            callbacks.on_vector(&vevt, callbacks.user_data);
+                            out_cb.vectors.push_back(vevt);
                         }
 
                         /* Feed logical vector into FrameDecoder -> ZERO-LATENCY OnToolfaceCallback */
@@ -189,7 +230,7 @@ struct DspEngine {
                             lat_ms,
                             [&](const DspToolfaceEvent& tf_evt) {
                                 if (callbacks.on_toolface) {
-                                    callbacks.on_toolface(&tf_evt, callbacks.user_data);
+                                    out_cb.toolfaces.push_back(tf_evt);
                                 }
                             }
                         );
@@ -218,8 +259,7 @@ struct DspEngine {
                 if (phys_vec_cursor >= total_phys_vecs) {
                     decoder.finish_frame();
                     if (callbacks.on_frame) {
-                        const DspFrameData snap = decoder.current_frame();
-                        callbacks.on_frame(&snap, callbacks.user_data);
+                        out_cb.frames.push_back(decoder.current_frame());
                     }
                     /* Leave a small guard before searching for next Sync Preamble */
                     if (next_vec_pos > static_cast<size_t>(ig)) {
@@ -234,23 +274,47 @@ struct DspEngine {
         }
     }
 
-    void push_samples_locked(const double* samples, int32_t count, int32_t overflow_flag) {
+    void push_samples_locked(const double* samples, int32_t count, int32_t overflow_flag, PendingCallbacks& out_cb) {
         if (!samples || count <= 0) return;
 
         filtered_scratch.resize(static_cast<size_t>(count));
         fir.process_block(samples, filtered_scratch.data(), static_cast<size_t>(count));
 
         if (callbacks.on_signal) {
-            DspSignalBlock blk{};
-            blk.raw_samples      = samples;
-            blk.filtered_samples = filtered_scratch.data();
-            blk.sample_count     = count;
-            blk.overflow_flag    = overflow_flag;
-            callbacks.on_signal(&blk, callbacks.user_data);
+            out_cb.raw_copy.assign(samples, samples + count);
+            out_cb.filtered_copy = filtered_scratch;
+            out_cb.overflow_flag = overflow_flag;
+            out_cb.has_signal    = true;
         }
 
         resampler.push_filtered(filtered_scratch.data(), static_cast<size_t>(count), virtual_buf);
-        process_virtual_buffer_locked();
+        process_virtual_buffer_locked(out_cb);
+    }
+
+    void dispatch_callbacks_unlocked(const PendingCallbacks& cb) const {
+        if (cb.has_signal && callbacks.on_signal) {
+            DspSignalBlock blk{};
+            blk.raw_samples      = cb.raw_copy.data();
+            blk.filtered_samples = cb.filtered_copy.data();
+            blk.sample_count     = static_cast<int32_t>(cb.raw_copy.size());
+            blk.overflow_flag    = cb.overflow_flag;
+            callbacks.on_signal(&blk, callbacks.user_data);
+        }
+        if (callbacks.on_vector) {
+            for (const auto& vevt : cb.vectors) {
+                callbacks.on_vector(&vevt, callbacks.user_data);
+            }
+        }
+        if (callbacks.on_toolface) {
+            for (const auto& tevt : cb.toolfaces) {
+                callbacks.on_toolface(&tevt, callbacks.user_data);
+            }
+        }
+        if (callbacks.on_frame) {
+            for (const auto& fr : cb.frames) {
+                callbacks.on_frame(&fr, callbacks.user_data);
+            }
+        }
     }
 };
 
@@ -292,6 +356,7 @@ DSPCORE_API DspEngine* DSPCORE_CALL dsp_create(const DspConfig* cfg, const DspCa
         dsp_config_default(&eng->cfg);
     }
     dsp_uso_v2_options_default(&eng->v2_opts);
+    eng->cached_uso_info.active_sample_rate_hz = eng->cfg.sample_rate_hz;
 
     if (callbacks) {
         eng->callbacks = *callbacks;
@@ -315,20 +380,43 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_configure(DspEngine* engine, const DspConfi
     if (!engine || !cfg) return DSP_ERR_INVALID_ARG;
     std::lock_guard<std::mutex> lock(engine->mutex);
 
+    const bool is_live_serial = engine->running.load() &&
+                                (engine->cfg.source_type == DSP_SRC_LEGACY_SERIAL) &&
+                                (cfg->source_type == DSP_SRC_LEGACY_SERIAL);
+
+    /* Never allow a stale caller cfg->sample_rate_hz (e.g. 250.0) to clobber
+     * the hardware-negotiated sample rate of a running USO32 stream! */
+    const double preserved_fs = is_live_serial ? engine->cfg.sample_rate_hz : cfg->sample_rate_hz;
+
+    const bool freq_changed = (std::fabs(engine->cfg.carrier_freq_hz - cfg->carrier_freq_hz) > 1e-4);
+    const bool gain_changed = (engine->cfg.gain_index != cfg->gain_index);
+    const bool corr_changed = (engine->cfg.corrector_enabled != cfg->corrector_enabled);
     const bool need_reset =
         (engine->cfg.format_id != cfg->format_id) ||
         (engine->cfg.ncod != cfg->ncod) ||
-        (engine->cfg.carrier_freq_hz != cfg->carrier_freq_hz) ||
-        (engine->cfg.sample_rate_hz != cfg->sample_rate_hz) ||
+        freq_changed ||
+        (std::fabs(engine->cfg.sample_rate_hz - preserved_fs) > 1e-4) ||
         (engine->cfg.source_type != cfg->source_type);
 
-    const bool gain_changed = (engine->cfg.gain_index != cfg->gain_index);
-    const bool corr_changed = (engine->cfg.corrector_enabled != cfg->corrector_enabled);
-
     engine->cfg = *cfg;
+    engine->cfg.sample_rate_hz = preserved_fs;
     engine->decoder.configure(engine->cfg);
 
-    if (engine->source && engine->source->is_open()) {
+    if (engine->running.load()) {
+        /* Queue hardware operations for the worker thread — returns in <50 us, zero UI freeze */
+        if (freq_changed && engine->cfg.source_type == DSP_SRC_LEGACY_SERIAL) {
+            engine->pending_reconfig = true;
+        } else {
+            if (gain_changed) {
+                engine->pending_gain     = true;
+                engine->pending_gain_val = cfg->gain_index;
+            }
+            if (corr_changed) {
+                engine->pending_corr     = true;
+                engine->pending_corr_val = (cfg->corrector_enabled != 0);
+            }
+        }
+    } else if (engine->source && engine->source->is_open()) {
         if (gain_changed) engine->source->set_gain(cfg->gain_index);
         if (corr_changed) engine->source->set_corrector(cfg->corrector_enabled != 0);
     }
@@ -349,62 +437,204 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_start(DspEngine* engine) {
     if (!engine) return DSP_ERR_INVALID_ARG;
     if (engine->running.load()) return DSP_ERR_ALREADY_RUNNING;
 
-    std::unique_ptr<dsp::IUsoSource> src;
     DspConfig local_cfg{};
+    DspUsoV2Options local_v2{};
     {
         std::lock_guard<std::mutex> lock(engine->mutex);
         local_cfg = engine->cfg;
-        switch (local_cfg.source_type) {
-            case DSP_SRC_LEGACY_SERIAL:
-                src = std::make_unique<dsp::LegacySerialUsoSource>();
-                break;
-            case DSP_SRC_NEW_ADC32:
-                src = std::make_unique<dsp::NewAdc32UsoSource>();
-                break;
-            case DSP_SRC_FILE_PLAYER:
-                src = std::make_unique<dsp::SmpFilePlayerSource>();
-                break;
-            default:
-                return DSP_ERR_INVALID_ARG;
-        }
-        src->set_v2_options(engine->v2_opts);
-        int32_t rc = src->open(local_cfg);
-        if (rc != DSP_OK) return rc;
-        const double neg_fs = src->effective_sample_rate_hz();
+        local_v2  = engine->v2_opts;
+    }
+
+    std::unique_ptr<dsp::IUsoSource> src;
+    switch (local_cfg.source_type) {
+        case DSP_SRC_LEGACY_SERIAL:
+            src = std::make_unique<dsp::LegacySerialUsoSource>();
+            break;
+        case DSP_SRC_NEW_ADC32:
+            src = std::make_unique<dsp::NewAdc32UsoSource>();
+            break;
+        case DSP_SRC_FILE_PLAYER:
+            src = std::make_unique<dsp::SmpFilePlayerSource>();
+            break;
+        default:
+            return DSP_ERR_INVALID_ARG;
+    }
+
+    /* Perform blocking serial/file open OUTSIDE engine->mutex */
+    src->set_v2_options(local_v2);
+    int32_t rc = src->open(local_cfg);
+    if (rc != DSP_OK) return rc;
+
+    DspUsoRuntimeInfo init_info{};
+    src->get_runtime_info(init_info);
+    const double neg_fs = src->effective_sample_rate_hz();
+
+    {
+        std::lock_guard<std::mutex> lock(engine->mutex);
         if (neg_fs > 1.0) {
             engine->cfg.sample_rate_hz = neg_fs;
+            init_info.active_sample_rate_hz = neg_fs;
         }
-        engine->source = std::move(src);
+        engine->cached_uso_info   = init_info;
+        engine->source            = std::move(src);
+        engine->pending_gain      = false;
+        engine->pending_corr      = false;
+        engine->pending_v2_opts   = false;
+        engine->pending_reconfig  = false;
+        engine->pending_diag      = false;
+        engine->pending_recal     = false;
+        engine->pending_reset_adc = false;
         engine->rebuild_pipeline_locked();
     }
 
     engine->running.store(true);
     engine->worker = std::thread([engine]() {
-        /* 16 samples @ 250 Hz = 64 ms per chunk -> smooth ~16 FPS real-time oscilloscope & FFT updates */
+        /* 16 samples @ 250..400 Hz = 40..64 ms per chunk; serial I/O runs WITHOUT holding engine->mutex! */
         std::vector<double> chunk(16, 0.0);
         while (engine->running.load()) {
-            int32_t overflow = 0;
-            int32_t got = 0;
+            /* 1. Grab any pending hardware requests under a ~2 us lock */
+            bool do_v2_opts = false;
+            bool do_reconfig = false;
+            bool do_gain = false;
+            bool do_corr = false;
+            bool do_diag = false;
+            bool do_recal = false;
+            bool do_reset_adc = false;
+            int32_t gain_val = 0;
+            bool corr_val = true;
+            DspConfig reconfig_cfg{};
+            DspUsoV2Options new_v2{};
+            int32_t src_type = DSP_SRC_LEGACY_SERIAL;
+            dsp::IUsoSource* src_ptr = nullptr;
+
             {
                 std::lock_guard<std::mutex> lock(engine->mutex);
-                if (!engine->source || !engine->source->is_open()) break;
-                got = engine->source->read_samples(
-                    chunk.data(),
-                    static_cast<int32_t>(chunk.size()),
-                    &overflow
-                );
-                if (got > 0) {
-                    engine->push_samples_locked(chunk.data(), got, overflow);
+                src_ptr  = engine->source.get();
+                src_type = engine->cfg.source_type;
+                if (!src_ptr) break;
+
+                if (engine->pending_v2_opts) {
+                    do_v2_opts = true;
+                    new_v2     = engine->v2_opts;
+                    engine->pending_v2_opts = false;
+                }
+                if (engine->pending_reconfig) {
+                    do_reconfig  = true;
+                    reconfig_cfg = engine->cfg;
+                    engine->pending_reconfig = false;
+                    engine->pending_gain     = false;
+                    engine->pending_corr     = false;
+                } else {
+                    if (engine->pending_gain) {
+                        do_gain  = true;
+                        gain_val = engine->pending_gain_val;
+                        engine->pending_gain = false;
+                    }
+                    if (engine->pending_corr) {
+                        do_corr  = true;
+                        corr_val = engine->pending_corr_val;
+                        engine->pending_corr = false;
+                    }
+                }
+                if (engine->pending_diag) {
+                    do_diag = true;
+                    engine->pending_diag = false;
+                }
+                if (engine->pending_recal) {
+                    do_recal = true;
+                    engine->pending_recal = false;
+                }
+                if (engine->pending_reset_adc) {
+                    do_reset_adc = true;
+                    engine->pending_reset_adc = false;
                 }
             }
-            if (got <= 0) {
-                /* EOF for file player or temporary read timeout for serial */
-                if (engine->cfg.source_type == DSP_SRC_FILE_PLAYER) {
+
+            if (!src_ptr->is_open()) break;
+
+            /* 2. Execute hardware commands OUTSIDE engine->mutex */
+            if (do_v2_opts) {
+                src_ptr->set_v2_options(new_v2);
+            }
+            if (do_reconfig) {
+                (void)src_ptr->reconfigure(reconfig_cfg);
+                const double new_fs = src_ptr->effective_sample_rate_hz();
+                DspUsoRuntimeInfo updated_info{};
+                src_ptr->get_runtime_info(updated_info);
+                std::lock_guard<std::mutex> lock(engine->mutex);
+                if (new_fs > 1.0) {
+                    engine->cfg.sample_rate_hz = new_fs;
+                    updated_info.active_sample_rate_hz = new_fs;
+                }
+                engine->cached_uso_info = updated_info;
+                engine->rebuild_pipeline_locked();
+            } else {
+                if (do_gain) (void)src_ptr->set_gain(gain_val);
+                if (do_corr) (void)src_ptr->set_corrector(corr_val);
+            }
+            if (do_diag) {
+                (void)src_ptr->refresh_diagnostics();
+            }
+            if (do_recal) {
+                int32_t op_rc = src_ptr->recalibrate();
+                std::lock_guard<std::mutex> lock(engine->mutex);
+                engine->sync_op_result = op_rc;
+                engine->sync_op_done   = true;
+                engine->sync_op_cv.notify_all();
+            }
+            if (do_reset_adc) {
+                int32_t op_rc = src_ptr->reset_adc();
+                std::lock_guard<std::mutex> lock(engine->mutex);
+                engine->sync_op_result = op_rc;
+                engine->sync_op_done   = true;
+                engine->sync_op_cv.notify_all();
+            }
+
+            /* 3. Blocking read from hardware / .smp file OUTSIDE engine->mutex */
+            int32_t overflow = 0;
+            int32_t got = src_ptr->read_samples(
+                chunk.data(),
+                static_cast<int32_t>(chunk.size()),
+                &overflow
+            );
+
+            DspUsoRuntimeInfo live_info{};
+            src_ptr->get_runtime_info(live_info);
+
+            if (got > 0) {
+                PendingCallbacks pending_cb;
+                {
+                    std::lock_guard<std::mutex> lock(engine->mutex);
+                    engine->cached_uso_info = live_info;
+                    if (live_info.active_sample_rate_hz > 1.0 &&
+                        std::fabs(engine->cfg.sample_rate_hz - live_info.active_sample_rate_hz) > 0.25 &&
+                        engine->cfg.source_type == DSP_SRC_LEGACY_SERIAL) {
+                        engine->cfg.sample_rate_hz = live_info.active_sample_rate_hz;
+                        engine->rebuild_pipeline_locked();
+                    }
+                    engine->push_samples_locked(chunk.data(), got, overflow, pending_cb);
+                }
+                /* 4. Fire C# callbacks OUTSIDE engine->mutex */
+                engine->dispatch_callbacks_unlocked(pending_cb);
+            } else {
+                {
+                    std::lock_guard<std::mutex> lock(engine->mutex);
+                    engine->cached_uso_info = live_info;
+                }
+                if (src_type == DSP_SRC_FILE_PLAYER) {
                     engine->running.store(false);
                     break;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
+        }
+
+        /* Wake any caller waiting on a synchronous calibration/reset if stopped */
+        std::lock_guard<std::mutex> lock(engine->mutex);
+        if (!engine->sync_op_done) {
+            engine->sync_op_result = DSP_ERR_NOT_FOUND;
+            engine->sync_op_done   = true;
+            engine->sync_op_cv.notify_all();
         }
     });
 
@@ -417,10 +647,13 @@ DSPCORE_API void DSPCORE_CALL dsp_stop(DspEngine* engine) {
     if (engine->worker.joinable()) {
         engine->worker.join();
     }
-    std::lock_guard<std::mutex> lock(engine->mutex);
-    if (engine->source) {
-        engine->source->close();
-        engine->source.reset();
+    std::unique_ptr<dsp::IUsoSource> to_close;
+    {
+        std::lock_guard<std::mutex> lock(engine->mutex);
+        to_close = std::move(engine->source);
+    }
+    if (to_close) {
+        to_close->close();
     }
 }
 
@@ -431,8 +664,12 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_push_samples(
     int32_t overflow_flag
 ) {
     if (!engine || !samples || count <= 0) return DSP_ERR_INVALID_ARG;
-    std::lock_guard<std::mutex> lock(engine->mutex);
-    engine->push_samples_locked(samples, count, overflow_flag);
+    PendingCallbacks pending_cb;
+    {
+        std::lock_guard<std::mutex> lock(engine->mutex);
+        engine->push_samples_locked(samples, count, overflow_flag, pending_cb);
+    }
+    engine->dispatch_callbacks_unlocked(pending_cb);
     return DSP_OK;
 }
 
@@ -498,8 +735,8 @@ DSPCORE_API void DSPCORE_CALL dsp_uso_v2_options_default(DspUsoV2Options* opts) 
     opts->chop_enabled      = 0;
     opts->vbias_enabled     = 1;
     opts->inpmux            = 0x89;
-    opts->mcu_lpf_mode      = dsp::usov2::LPF_BYPASS;
-    opts->mcu_lpf_cutoff_hz = 0.0; /* auto */
+    opts->mcu_lpf_mode      = dsp::usov2::LPF_BUTTER4; /* Adaptive on-MCU LPF (no PC KIH*.dat needed) */
+    opts->mcu_lpf_cutoff_hz = 0.0; /* auto ~2.5 * carrier */
     opts->mcu_hpf_cutoff_hz = 0.1;
     opts->batch_size        = 0; /* auto */
     opts->auto_recover      = 1;
@@ -508,8 +745,14 @@ DSPCORE_API void DSPCORE_CALL dsp_uso_v2_options_default(DspUsoV2Options* opts) 
 DSPCORE_API int32_t DSPCORE_CALL dsp_set_uso_v2_options(DspEngine* engine, const DspUsoV2Options* opts) {
     if (!engine || !opts) return DSP_ERR_INVALID_ARG;
     std::lock_guard<std::mutex> lock(engine->mutex);
+    const bool changed = (std::memcmp(&engine->v2_opts, opts, sizeof(DspUsoV2Options)) != 0);
     engine->v2_opts = *opts;
-    if (engine->source) {
+    if (engine->running.load()) {
+        if (changed) {
+            engine->pending_v2_opts  = true;
+            engine->pending_reconfig = true;
+        }
+    } else if (engine->source) {
         engine->source->set_v2_options(*opts);
     }
     return DSP_OK;
@@ -518,10 +761,8 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_set_uso_v2_options(DspEngine* engine, const
 DSPCORE_API int32_t DSPCORE_CALL dsp_get_uso_info(DspEngine* engine, DspUsoRuntimeInfo* out_info) {
     if (!engine || !out_info) return DSP_ERR_INVALID_ARG;
     std::lock_guard<std::mutex> lock(engine->mutex);
-    if (engine->source) {
-        engine->source->get_runtime_info(*out_info);
-    } else {
-        std::memset(out_info, 0, sizeof(DspUsoRuntimeInfo));
+    *out_info = engine->cached_uso_info;
+    if (out_info->active_sample_rate_hz <= 1.0) {
         out_info->active_sample_rate_hz = engine->cfg.sample_rate_hz;
     }
     return DSP_OK;
@@ -529,20 +770,34 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_get_uso_info(DspEngine* engine, DspUsoRunti
 
 DSPCORE_API int32_t DSPCORE_CALL dsp_uso_recalibrate(DspEngine* engine) {
     if (!engine) return DSP_ERR_INVALID_ARG;
-    std::lock_guard<std::mutex> lock(engine->mutex);
-    return engine->source ? engine->source->recalibrate() : DSP_ERR_NOT_FOUND;
+    std::unique_lock<std::mutex> lock(engine->mutex);
+    if (!engine->running.load() || !engine->source) return DSP_ERR_NOT_FOUND;
+    engine->sync_op_done  = false;
+    engine->pending_recal = true;
+    if (!engine->sync_op_cv.wait_for(lock, std::chrono::seconds(5), [&]() { return engine->sync_op_done; })) {
+        return DSP_ERR_PORT_OPEN;
+    }
+    return engine->sync_op_result;
 }
 
 DSPCORE_API int32_t DSPCORE_CALL dsp_uso_reset_adc(DspEngine* engine) {
     if (!engine) return DSP_ERR_INVALID_ARG;
-    std::lock_guard<std::mutex> lock(engine->mutex);
-    return engine->source ? engine->source->reset_adc() : DSP_ERR_NOT_FOUND;
+    std::unique_lock<std::mutex> lock(engine->mutex);
+    if (!engine->running.load() || !engine->source) return DSP_ERR_NOT_FOUND;
+    engine->sync_op_done      = false;
+    engine->pending_reset_adc = true;
+    if (!engine->sync_op_cv.wait_for(lock, std::chrono::seconds(4), [&]() { return engine->sync_op_done; })) {
+        return DSP_ERR_PORT_OPEN;
+    }
+    return engine->sync_op_result;
 }
 
 DSPCORE_API int32_t DSPCORE_CALL dsp_uso_refresh_diag(DspEngine* engine) {
     if (!engine) return DSP_ERR_INVALID_ARG;
     std::lock_guard<std::mutex> lock(engine->mutex);
-    return engine->source ? engine->source->refresh_diagnostics() : DSP_ERR_NOT_FOUND;
+    if (!engine->running.load() || !engine->source) return DSP_ERR_NOT_FOUND;
+    engine->pending_diag = true;
+    return DSP_OK;
 }
 
 } /* extern "C" */

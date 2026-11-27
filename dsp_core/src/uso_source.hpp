@@ -30,9 +30,10 @@ public:
      */
     virtual int32_t read_samples(double* out_samples, int32_t max_samples, int32_t* out_overflow) = 0;
 
-    /** Runtime control commands (gain / corrector). No-op for file player. */
+    /** Runtime control commands (gain / corrector / live reconfigure). No-op for file player. */
     virtual int32_t set_gain(int32_t gain_index) = 0;
     virtual int32_t set_corrector(bool enabled) = 0;
+    virtual int32_t reconfigure(const DspConfig&) { return DSP_OK; }
 
     /** Negotiated actual sample rate (<= 0 means use cfg.sample_rate_hz). */
     virtual double effective_sample_rate_hz() const { return 0.0; }
@@ -65,6 +66,7 @@ public:
     int32_t read_samples(double* out_samples, int32_t max_samples, int32_t* out_overflow) override;
     int32_t set_gain(int32_t gain_index) override;
     int32_t set_corrector(bool enabled) override;
+    int32_t reconfigure(const DspConfig& cfg) override;
     double effective_sample_rate_hz() const override;
     void set_v2_options(const DspUsoV2Options& opts) override;
     void get_runtime_info(DspUsoRuntimeInfo& out) const override;
@@ -92,6 +94,7 @@ private:
     /* V2 helpers */
     bool send_v2_cmd(uint8_t msg_type, const uint8_t* payload, uint8_t payload_len, uint16_t* out_seq = nullptr);
     bool wait_v2_response(uint8_t expected_msg_type, uint16_t expected_seq, usov2::Frame& out_frame, int32_t timeout_ms);
+    bool start_v2_stream(const DspConfig& cfg);
     bool try_open_v2(const DspConfig& cfg);
     int32_t read_samples_v2(double* out_samples, int32_t max_samples, int32_t* out_overflow);
 

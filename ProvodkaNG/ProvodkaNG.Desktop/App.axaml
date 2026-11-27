@@ -183,14 +183,6 @@
           </StackPanel>
 
           <StackPanel Spacing="4">
-            <TextBlock Text="КИХ-фильтр (KIH*.dat)" Classes="kpi-label" />
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-              <TextBox Grid.Column="0" Text="{Binding Main.FirFilePath}" Watermark="Без фильтра (bypass)" />
-              <Button Grid.Column="1" Content="..." Command="{Binding Main.LoadFirFileCommand}" Padding="10,5" />
-            </Grid>
-          </StackPanel>
-
-          <StackPanel Spacing="4">
             <Grid ColumnDefinitions="*,Auto">
               <TextBlock Grid.Column="0" Text="Порог ДСП" Classes="kpi-label" />
               <TextBlock Grid.Column="1"

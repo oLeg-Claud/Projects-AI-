@@ -17,7 +17,6 @@ public partial class MainWindow : Window
         if (DataContext is MainWindowViewModel vm)
         {
             vm.PickSmpFileAsync = PickSmpFileAsync;
-            vm.PickFirFileAsync = PickFirFileAsync;
             vm.RequestExit = Close;
         }
     }
@@ -31,22 +30,6 @@ public partial class MainWindow : Window
             FileTypeFilter =
             [
                 new FilePickerFileType("Записи ПРОВОДКА (.smp)") { Patterns = ["*.smp"] },
-                FilePickerFileTypes.All
-            ]
-        });
-
-        return files.Count > 0 ? files[0].TryGetLocalPath() : null;
-    }
-
-    private async Task<string?> PickFirFileAsync()
-    {
-        IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-        {
-            Title = "Выбор файла коэффициентов КИХ-фильтра (KIH*.dat)",
-            AllowMultiple = false,
-            FileTypeFilter =
-            [
-                new FilePickerFileType("Коэффициенты КИХ (.dat)") { Patterns = ["*.dat"] },
                 FilePickerFileTypes.All
             ]
         });
