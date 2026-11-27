@@ -25,6 +25,12 @@ public interface IDspEngineClient : IDisposable
     void Stop();
     DspStatusCode PushSamples(ReadOnlySpan<double> samples, bool overflowFlag = false);
     FrameSnapshot? GetLastFrame();
+
+    DspStatusCode SetUsoV2Options(UsoV2Options options) => DspStatusCode.Ok;
+    UsoRuntimeInfo? GetUsoInfo() => null;
+    DspStatusCode RecalibrateUso() => DspStatusCode.NotFound;
+    DspStatusCode ResetUsoAdc() => DspStatusCode.NotFound;
+    DspStatusCode RefreshUsoDiagnostics() => DspStatusCode.NotFound;
 }
 
 /// <summary>
@@ -217,6 +223,54 @@ public sealed unsafe class DspEngineClient : IDspEngineClient
             ThrowIfDisposed();
             DspStatusCode status = DspNativeMethods.GetLastFrame(_handle, out DspFrameDataNative native);
             return status == DspStatusCode.Ok ? FrameSnapshot.FromNative(in native) : null;
+        }
+    }
+
+    public DspStatusCode SetUsoV2Options(UsoV2Options options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            DspUsoV2OptionsNative native = options.ToNative();
+            return DspNativeMethods.SetUsoV2Options(_handle, in native);
+        }
+    }
+
+    public UsoRuntimeInfo? GetUsoInfo()
+    {
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            DspStatusCode status = DspNativeMethods.GetUsoInfo(_handle, out DspUsoRuntimeInfoNative native);
+            return status == DspStatusCode.Ok ? UsoRuntimeInfo.FromNative(in native) : null;
+        }
+    }
+
+    public DspStatusCode RecalibrateUso()
+    {
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            return DspNativeMethods.UsoRecalibrate(_handle);
+        }
+    }
+
+    public DspStatusCode ResetUsoAdc()
+    {
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            return DspNativeMethods.UsoResetAdc(_handle);
+        }
+    }
+
+    public DspStatusCode RefreshUsoDiagnostics()
+    {
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            return DspNativeMethods.UsoRefreshDiag(_handle);
         }
     }
 

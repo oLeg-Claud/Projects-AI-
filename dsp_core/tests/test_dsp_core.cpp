@@ -1,5 +1,6 @@
 #include "../include/dsp_core_api.h"
 #include "../src/dsp_internal.hpp"
+#include "../src/uso_proto_v2.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -430,6 +431,80 @@ void test_real_smp_file_player() {
                 static_cast<long long>(st.total_samples));
 }
 
+/* Test 8: USO-32 Dual-Mode Protocol V2 framing, CRC-16, batching & C ABI parity */
+void test_uso_v2_protocol_and_abi() {
+    /* Exact C ABI sizes matching ProvodkaNG.Core DspNativeTypes.cs */
+    static_assert(sizeof(DspUsoV2Options) == 56, "DspUsoV2Options ABI size mismatch");
+    static_assert(sizeof(DspUsoRuntimeInfo) == 96, "DspUsoRuntimeInfo ABI size mismatch");
+
+    /* Batch encode + incremental parse round-trip */
+    dsp::usov2::DataBatch tx{};
+    tx.timestamp_ms     = 55123u;
+    tx.first_sample_idx = 4096u;
+    tx.effective_fs_dhz = 2000u; /* 200.0 Hz */
+    tx.flags            = dsp::usov2::kBatchPgaOvf | dsp::usov2::kBatchHpfActive;
+    tx.pga_gain         = 4u;
+    tx.sample_count     = 8u;
+    for (uint8_t i = 0; i < tx.sample_count; ++i) {
+        tx.samples[i] = (i % 2 == 0) ? (250000 * static_cast<int32_t>(i + 1)) : (-125000 * static_cast<int32_t>(i + 1));
+    }
+
+    uint8_t wire[dsp::usov2::kMaxFrame]{};
+    unsigned wlen = dsp::usov2::encode_batch_for_test(77u, tx, wire);
+    CHECK(wlen == 9u + 12u + 32u); /* 53 bytes < 64 USB FS MPS */
+
+    dsp::usov2::StreamParser parser;
+    dsp::usov2::Frame f{};
+    int r = 0;
+    /* Feed leading garbage followed by valid V2 batch frame */
+    CHECK(parser.feed(0x00, f) == 0);
+    CHECK(parser.feed(0xFF, f) == 0);
+    for (unsigned i = 0; i < wlen; ++i) {
+        r = parser.feed(wire[i], f);
+        if (i + 1 < wlen) CHECK(r == 0);
+    }
+    CHECK(r == 1);
+    CHECK(f.msg_type == dsp::usov2::MSG_DATA_BATCH);
+    CHECK(f.seq == 77u);
+
+    dsp::usov2::DataBatch rx{};
+    CHECK(dsp::usov2::unpack_batch(f.payload, f.payload_len, rx));
+    CHECK(rx.timestamp_ms == tx.timestamp_ms);
+    CHECK(rx.first_sample_idx == tx.first_sample_idx);
+    CHECK(rx.effective_fs_dhz == 2000u);
+    CHECK(rx.flags == tx.flags);
+    CHECK(rx.pga_gain == 4u);
+    CHECK(rx.sample_count == 8u);
+    for (uint8_t i = 0; i < 8u; ++i) CHECK(rx.samples[i] == tx.samples[i]);
+
+    /* Verify corrupted CRC is rejected */
+    wire[12] ^= 0x80u;
+    for (unsigned i = 0; i < wlen; ++i) r = parser.feed(wire[i], f);
+    CHECK(r == -1);
+    CHECK(parser.crc_errors() == 1u);
+
+    /* Verify C ABI options & runtime info calls */
+    DspUsoV2Options opts{};
+    dsp_uso_v2_options_default(&opts);
+    CHECK(opts.adaptive_rate == 1);
+    CHECK(opts.adc_filter == dsp::usov2::FLT_SINC4);
+    CHECK(opts.mcu_lpf_mode == dsp::usov2::LPF_BYPASS);
+
+    DspConfig cfg{};
+    dsp_config_default(&cfg);
+    DspEngine* eng = dsp_create(&cfg, nullptr);
+    CHECK(eng != nullptr);
+    CHECK(dsp_set_uso_v2_options(eng, &opts) == DSP_OK);
+    DspUsoRuntimeInfo info{};
+    CHECK(dsp_get_uso_info(eng, &info) == DSP_OK);
+    CHECK(info.protocol_version == 0);
+    CHECK(std::fabs(info.active_sample_rate_hz - 250.0) < 1e-6);
+    dsp_destroy(eng);
+
+    g_tests_passed++;
+    std::printf("[PASS] test_uso_v2_protocol_and_abi (V2Options=56B, RuntimeInfo=96B, CRC16 batch OK)\n");
+}
+
 } // namespace
 
 int main() {
@@ -441,6 +516,7 @@ int main() {
     test_pik5_dynamic_step_h_tracking();
     test_geomash_crc32_format30();
     test_real_smp_file_player();
+    test_uso_v2_protocol_and_abi();
     std::printf("=== ALL %d TESTS PASSED ===\n", g_tests_passed);
     return 0;
 }

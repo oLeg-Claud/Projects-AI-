@@ -250,3 +250,85 @@ public sealed record UsoProbeResult(
     int UsoId,
     DspStatusCode Status,
     string Diagnostics = "");
+
+public sealed class UsoV2Options
+{
+    public bool AdaptiveRate { get; set; } = true;
+    public int DrCode { get; set; } = 0x08;       // 400 SPS nominal
+    public int Decimation { get; set; } = 0;      // 0 = auto
+    public int AdcFilter { get; set; } = 3;       // 3 = Sinc4
+    public bool ChopEnabled { get; set; } = false;
+    public bool VbiasEnabled { get; set; } = true;
+    public int Inpmux { get; set; } = 0x89;       // AIN8/AIN9 seismic transformer
+    public int McuLpfMode { get; set; } = 0;      // 0 = Bypass (linear phase for PC FIR)
+    public double McuLpfCutoffHz { get; set; } = 0.0;
+    public double McuHpfCutoffHz { get; set; } = 0.1;
+    public int BatchSize { get; set; } = 0;       // 0 = auto (~25 ms)
+    public bool AutoRecover { get; set; } = true;
+
+    public DspUsoV2OptionsNative ToNative() => new()
+    {
+        AdaptiveRate = AdaptiveRate ? 1 : 0,
+        DrCode = DrCode,
+        Decimation = Decimation,
+        AdcFilter = AdcFilter,
+        ChopEnabled = ChopEnabled ? 1 : 0,
+        VbiasEnabled = VbiasEnabled ? 1 : 0,
+        Inpmux = Inpmux,
+        McuLpfMode = McuLpfMode,
+        McuLpfCutoffHz = McuLpfCutoffHz,
+        McuHpfCutoffHz = McuHpfCutoffHz,
+        BatchSize = BatchSize,
+        AutoRecover = AutoRecover ? 1 : 0
+    };
+}
+
+public sealed record UsoRuntimeInfo(
+    int ProtocolVersion,
+    int UsoId,
+    int FwMajor,
+    int FwMinor,
+    int FwPatch,
+    int AdcId,
+    int DrCode,
+    int Decimation,
+    int AdcFilter,
+    bool ChopEnabled,
+    int Inpmux,
+    int AdcStatus,
+    bool HwFault,
+    double ActiveSampleRateHz,
+    double HwSampleRateHz,
+    uint AdcClockHz,
+    uint CrcErrors,
+    uint DroppedSamples,
+    uint MissedDrdy,
+    uint TxOverflows,
+    uint RxPackets)
+{
+    public bool IsV2 => ProtocolVersion == 2;
+    public string FirmwareVersionText => ProtocolVersion == 2 ? $"v{FwMajor}.{FwMinor}.{FwPatch}" : "Legacy";
+
+    public static UsoRuntimeInfo FromNative(in DspUsoRuntimeInfoNative n) => new(
+        n.ProtocolVersion,
+        n.UsoId,
+        n.FwMajor,
+        n.FwMinor,
+        n.FwPatch,
+        n.AdcId,
+        n.DrCode,
+        n.Decimation,
+        n.AdcFilter,
+        n.ChopEnabled != 0,
+        n.Inpmux,
+        n.AdcStatus,
+        n.HwFault != 0,
+        n.ActiveSampleRateHz,
+        n.HwSampleRateHz,
+        n.AdcClockHz,
+        n.CrcErrors,
+        n.DroppedSamples,
+        n.MissedDrdy,
+        n.TxOverflows,
+        n.RxPackets);
+}

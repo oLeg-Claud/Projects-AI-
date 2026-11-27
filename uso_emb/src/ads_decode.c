@@ -1,5 +1,7 @@
 #include "ads1262.h"
+#include <limits.h>
 #include <string.h>
+
 ads_result_t ads_decode(const uint8_t b[6], int32_t *value, uint8_t *status)
 {
     *status = b[0];
@@ -11,5 +13,32 @@ ads_result_t ads_decode(const uint8_t b[6], int32_t *value, uint8_t *status)
     uint32_t raw = ((uint32_t)b[1] << 24) | ((uint32_t)b[2] << 16) |
                    ((uint32_t)b[3] << 8) | b[4];
     memcpy(value, &raw, sizeof(raw));
+    return ADS_OK;
+}
+
+ads_result_t ads_decode_ex(const uint8_t b[6], int32_t *value, uint8_t *status, bool *pga_overflow)
+{
+    if (status) *status = b[0];
+    if (pga_overflow) *pga_overflow = false;
+
+    uint8_t sum = (uint8_t)(0x9bu + b[1] + b[2] + b[3] + b[4]);
+    if (sum != b[5]) return ADS_CHECKSUM;
+
+    /* Separate fatal hardware alarms (bit0=RESET, bit1=REF_ALM) from PGA signal overrange
+     * (bit2=PGAL_ALM, bit3=PGAH_ALM, bit4=PGAD_ALM). Signal clipping must NOT kill the ADC! */
+    if ((b[0] & 0x03u) != 0u) return ADS_ALARM;
+    if (!(b[0] & 0x40u)) return ADS_STALE;
+
+    uint32_t raw = ((uint32_t)b[1] << 24) | ((uint32_t)b[2] << 16) |
+                   ((uint32_t)b[3] << 8) | b[4];
+    int32_t sample;
+    memcpy(&sample, &raw, sizeof(sample));
+    if (value) *value = sample;
+
+    if (pga_overflow) {
+        if ((b[0] & 0x1Cu) != 0u || sample == INT32_MAX || sample == INT32_MIN) {
+            *pga_overflow = true;
+        }
+    }
     return ADS_OK;
 }

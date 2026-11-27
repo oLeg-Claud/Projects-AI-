@@ -19,7 +19,7 @@
     <DataTemplate x:DataType="dp:UsoControlTool">
       <ScrollViewer VerticalScrollBarVisibility="Auto" Background="{DynamicResource BgPanelBrush}">
         <StackPanel Spacing="10" Margin="10">
-          <TextBlock Text="УСО32 (uco32 • 57600 8N1 • АВТО)" Classes="section-title" />
+          <TextBlock Text="УСО32 (V2 / Legacy • АВТО)" Classes="section-title" />
 
           <Border Classes="kpi-card">
             <StackPanel Spacing="3">
@@ -30,15 +30,94 @@
                          FontFamily="Consolas, monospace"
                          Foreground="{DynamicResource AccentCyanBrush}"
                          TextWrapping="Wrap" />
-              <TextBlock Text="{Binding Main.ReinitCount, StringFormat='Переинициализаций: {0}'}"
+              <TextBlock Text="{Binding Main.ActiveProtocolLabel}"
                          FontSize="11"
+                         FontFamily="Consolas, monospace"
+                         Foreground="{DynamicResource AccentAmberBrush}" />
+              <TextBlock Text="{Binding Main.UsoDiagSummary}"
+                         FontSize="10.5"
+                         FontFamily="Consolas, monospace"
+                         Foreground="{DynamicResource TextSecondaryBrush}" />
+              <TextBlock Text="{Binding Main.ReinitCount, StringFormat='Переинициализаций: {0}'}"
+                         FontSize="10.5"
                          Foreground="{DynamicResource TextSecondaryBrush}" />
             </StackPanel>
           </Border>
 
-          <Button Content="Переинициализировать УСО32"
-                  Command="{Binding Main.ForceReinitUsoCommand}"
-                  HorizontalAlignment="Stretch" />
+          <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
+            <Button Grid.Column="0"
+                    Content="Переинит. УСО"
+                    Command="{Binding Main.ForceReinitUsoCommand}"
+                    HorizontalAlignment="Stretch" />
+            <Button Grid.Column="1"
+                    Content="Калибр. АЦП"
+                    Command="{Binding Main.RecalibrateUsoCommand}"
+                    IsEnabled="{Binding Main.IsUsoV2Active}"
+                    HorizontalAlignment="Stretch" />
+          </Grid>
+
+          <Expander Header="Тракт АЦП ADS1262 (Протокол V2)" IsExpanded="False">
+            <StackPanel Spacing="6" Margin="0,6,0,0">
+              <StackPanel Spacing="2">
+                <TextBlock Text="Частота дискретизации (Fs)" Classes="kpi-label" />
+                <ComboBox ItemsSource="{Binding Main.RateModeOptions}"
+                          SelectedItem="{Binding Main.SelectedRateMode}"
+                          HorizontalAlignment="Stretch">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:RateModeOption">
+                      <TextBlock Text="{Binding DisplayName}" />
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+
+              <StackPanel Spacing="2">
+                <TextBlock Text="Цифровой фильтр ADS1262" Classes="kpi-label" />
+                <ComboBox ItemsSource="{Binding Main.AdcFilterOptions}"
+                          SelectedItem="{Binding Main.SelectedAdcFilter}"
+                          HorizontalAlignment="Stretch">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:AdcFilterOption">
+                      <TextBlock Text="{Binding DisplayName}" />
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+
+              <StackPanel Spacing="2">
+                <TextBlock Text="ФНЧ микроконтроллера" Classes="kpi-label" />
+                <ComboBox ItemsSource="{Binding Main.McuLpfOptions}"
+                          SelectedItem="{Binding Main.SelectedMcuLpfMode}"
+                          HorizontalAlignment="Stretch">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:McuLpfOption">
+                      <TextBlock Text="{Binding DisplayName}" />
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+
+              <StackPanel Spacing="2">
+                <TextBlock Text="Входной мультиплексор (INPMUX)" Classes="kpi-label" />
+                <ComboBox ItemsSource="{Binding Main.InputMuxOptions}"
+                          SelectedItem="{Binding Main.SelectedInputMux}"
+                          HorizontalAlignment="Stretch">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:InputMuxOption">
+                      <TextBlock Text="{Binding DisplayName}" />
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+
+              <CheckBox Content="Чоппер ADS1262 (CHOP — дрейф нуля)" IsChecked="{Binding Main.ChopEnabled}" />
+
+              <Button Content="Аппаратный сброс АЦП (Reset)"
+                      Command="{Binding Main.ResetUsoAdcCommand}"
+                      IsEnabled="{Binding Main.IsUsoV2Active}"
+                      HorizontalAlignment="Stretch" />
+            </StackPanel>
+          </Expander>
 
           <Separator Background="{DynamicResource BorderSubtleBrush}" Margin="0,2" />
           <TextBlock Text="ПЛЕЕР ЗАПИСЕЙ (.SMP)" Classes="section-title" />

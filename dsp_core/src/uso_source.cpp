@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <thread>
@@ -90,7 +91,6 @@ intptr_t open_serial_57600_8n1(const char* port_name, int32_t read_timeout_ms) {
 
     COMMTIMEOUTS cto{};
     if (!GetCommTimeouts(h, &cto)) { CloseHandle(h); return -1; }
-    /* Match TRAEKT2k.cpp / YCO8_1.cpp: ReadIntervalTimeout=0 so FTDI 16ms USB chunks never abort early */
     cto.ReadIntervalTimeout         = 0;
     cto.ReadTotalTimeoutMultiplier  = 0;
     cto.ReadTotalTimeoutConstant    = static_cast<DWORD>(read_timeout_ms);
@@ -101,7 +101,6 @@ intptr_t open_serial_57600_8n1(const char* port_name, int32_t read_timeout_ms) {
     DCB dcb{};
     dcb.DCBlength = sizeof(DCB);
     if (!GetCommState(h, &dcb)) { CloseHandle(h); return -1; }
-    /* Match TRAEKT2k.cpp lines 2685-2689: do NOT override fDtrControl / fRtsControl */
     dcb.BaudRate = CBR_57600;
     dcb.ByteSize = 8;
     dcb.Parity   = NOPARITY;
@@ -158,21 +157,34 @@ void close_serial_handle(intptr_t handle) {
 #endif
 }
 
-bool serial_write_byte(intptr_t handle, uint8_t b) {
-    if (handle < 0) return false;
+bool serial_write_bytes(intptr_t handle, const uint8_t* data, int32_t len) {
+    if (handle < 0 || !data || len <= 0) return false;
 #if defined(_WIN32)
     DWORD written = 0;
-    return WriteFile(reinterpret_cast<HANDLE>(handle), &b, 1, &written, nullptr) && written == 1;
+    return WriteFile(reinterpret_cast<HANDLE>(handle), data, static_cast<DWORD>(len), &written, nullptr)
+           && static_cast<int32_t>(written) == len;
 #else
-    ssize_t w = ::write(static_cast<int>(handle), &b, 1);
-    return w == 1;
+    int32_t total = 0;
+    while (total < len) {
+        ssize_t w = ::write(static_cast<int>(handle), data + total, static_cast<size_t>(len - total));
+        if (w < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            return false;
+        }
+        if (w == 0) return false;
+        total += static_cast<int32_t>(w);
+    }
+    return true;
 #endif
+}
+
+bool serial_write_byte(intptr_t handle, uint8_t b) {
+    return serial_write_bytes(handle, &b, 1);
 }
 
 bool serial_transmit_immediate(intptr_t handle, uint8_t b) {
     if (handle < 0) return false;
 #if defined(_WIN32)
-    /* Matches TRAEKT2k.cpp line 2695: TransmitCommChar(iport, 0xAA) */
     if (TransmitCommChar(reinterpret_cast<HANDLE>(handle), static_cast<char>(b))) {
         return true;
     }
@@ -239,19 +251,41 @@ int32_t serial_read_bytes(intptr_t handle, uint8_t* dst, int32_t len, int32_t ti
 #endif
 }
 
+bool try_v2_hello_on_handle(intptr_t h, usov2::HelloRsp& out_hello) {
+    uint8_t cmd[usov2::kMaxFrame]{};
+    unsigned n = usov2::encode_cmd(usov2::CMD_HELLO, 1u, nullptr, 0u, cmd);
+    if (!serial_write_bytes(h, cmd, static_cast<int32_t>(n))) return false;
+
+    usov2::StreamParser parser;
+    usov2::Frame frame;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(90);
+    uint8_t buf[64]{};
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        int32_t got = serial_read_bytes(h, buf, sizeof(buf), 40);
+        if (got <= 0) break;
+        for (int32_t i = 0; i < got; ++i) {
+            if (parser.feed(buf[i], frame) == 1 && frame.msg_type == usov2::RSP_HELLO) {
+                if (usov2::unpack_hello_rsp(frame.payload, frame.payload_len, out_hello)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 int32_t probe_port_internal(const char* port_name, int32_t* out_uso_id, std::string* diag_out) {
     if (!port_name || !out_uso_id) return DSP_ERR_INVALID_ARG;
     *out_uso_id = 0;
 
-    intptr_t h = open_serial_57600_8n1(port_name, 80);
+    intptr_t h = open_serial_57600_8n1(port_name, 70);
     if (h < 0) {
         if (diag_out) *diag_out = std::string(port_name) + "(open_err)";
         return DSP_ERR_PORT_OPEN;
     }
 
-    auto try_handshake = [&](uint8_t* last_buf, int32_t* last_got) -> bool {
-        /* Exact TRAEKT2k.cpp N_USO lines 2695-2710:
-         * TransmitCommChar(0xAA) -> ReadFile(1) -> WriteFile(0x66) -> ReadFile(5) */
+    auto try_legacy = [&](uint8_t* last_buf, int32_t* last_got) -> bool {
         serial_transmit_immediate(h, 0xAA);
         uint8_t ack = 0;
         (void)serial_read_bytes(h, &ack, 1, 50);
@@ -272,23 +306,43 @@ int32_t probe_port_internal(const char* port_name, int32_t* out_uso_id, std::str
         return false;
     };
 
+    /* 1. Try USO-NG Protocol V2 first (0xA5 0x5A CMD_HELLO — ignored harmlessly by legacy USO) */
+    usov2::HelloRsp hello{};
+    bool is_v2 = try_v2_hello_on_handle(h, hello);
+    bool ok = false;
     uint8_t rx[5]{};
     int32_t got = 0;
-    bool ok = try_handshake(rx, &got);
 
-    /* Pass 2 fallback: only if USO32 was mid-stream and 0x66 reply was mixed with ADC bytes */
-    if (!ok) {
-        serial_write_byte(h, 0x10);
-        std::this_thread::sleep_for(std::chrono::milliseconds(30));
-        purge_serial_handle(h);
-        ok = try_handshake(rx, &got);
+    if (is_v2) {
+        *out_uso_id = static_cast<int32_t>(hello.device_id);
+        ok = true;
+    } else {
+        /* 2. Try Legacy handshake (0xAA -> 0x66) */
+        ok = try_legacy(rx, &got);
+
+        /* 3. Pass 2 fallback: stop active stream (0x10 stops BOTH legacy and V2 streams!) */
+        if (!ok) {
+            serial_write_byte(h, 0x10);
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            purge_serial_handle(h);
+            is_v2 = try_v2_hello_on_handle(h, hello);
+            if (is_v2) {
+                *out_uso_id = static_cast<int32_t>(hello.device_id);
+                ok = true;
+            } else {
+                ok = try_legacy(rx, &got);
+            }
+        }
     }
 
     close_serial_handle(h);
 
     if (diag_out) {
-        if (ok) {
-            *diag_out = std::string(port_name) + "(УСО#" + std::to_string(*out_uso_id) + ")";
+        if (ok && is_v2) {
+            *diag_out = std::string(port_name) + "(УСО#" + std::to_string(*out_uso_id) +
+                        " V2 v" + std::to_string(hello.fw_major) + "." + std::to_string(hello.fw_minor) + ")";
+        } else if (ok) {
+            *diag_out = std::string(port_name) + "(УСО#" + std::to_string(*out_uso_id) + " Legacy)";
         } else if (got <= 0) {
             *diag_out = std::string(port_name) + "(0б)";
         } else {
@@ -316,7 +370,6 @@ std::vector<std::string> enumerate_serial_ports() {
     };
 
 #if defined(_WIN32)
-    /* 1. Kernel DOS device namespace (works on all Windows versions without Registry ACL issues) */
     std::vector<char> dos_buf(65536, '\0');
     DWORD len = QueryDosDeviceA(nullptr, dos_buf.data(), static_cast<DWORD>(dos_buf.size()));
     if (len > 0) {
@@ -331,15 +384,12 @@ std::vector<std::string> enumerate_serial_ports() {
                 for (size_t i = 3; i < name.size(); ++i) {
                     if (name[i] < '0' || name[i] > '9') { digits = false; break; }
                 }
-                if (digits) {
-                    add_unique("COM" + name.substr(3));
-                }
+                if (digits) add_unique("COM" + name.substr(3));
             }
             p += name.size() + 1;
         }
     }
 
-    /* 2. Also merge HKLM\HARDWARE\DEVICEMAP\SERIALCOMM */
     HKEY hKey = nullptr;
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DEVICEMAP\\SERIALCOMM", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         char val_name[256]{};
@@ -361,10 +411,10 @@ std::vector<std::string> enumerate_serial_ports() {
         RegCloseKey(hKey);
     }
 
-    /* Sort COM ports numerically (COM1, COM2, ..., COM10) */
     std::sort(ports.begin(), ports.end(), [](const std::string& a, const std::string& b) {
         auto parse_com = [](const std::string& s) -> int {
-            if (s.size() > 3 && (s[0] == 'C' || s[0] == 'c') && (s[1] == 'O' || s[1] == 'o') && (s[2] == 'M' || s[2] == 'm')) {
+            if (s.size() > 3 && (s[0] == 'C' || s[0] == 'c') &&
+                (s[1] == 'O' || s[1] == 'o') && (s[2] == 'M' || s[2] == 'm')) {
                 return std::atoi(s.c_str() + 3);
             }
             return 9999;
@@ -391,10 +441,22 @@ std::vector<std::string> enumerate_serial_ports() {
 } // namespace
 
 /* ============================================================================
- * 1. LegacySerialUsoSource Implementation
+ * 1. Dual-Mode LegacySerialUsoSource (Auto V2 -> Legacy Fallback)
  * ============================================================================ */
 LegacySerialUsoSource::LegacySerialUsoSource()
-    : handle_(-1), bit_mode_(32), gain_index_(0), synced_(false) {}
+    : handle_(-1),
+      bit_mode_(32),
+      gain_index_(0),
+      synced_(false),
+      v2_active_(false),
+      v2_seq_(1u),
+      v2_have_sample_idx_(false),
+      v2_expected_sample_idx_(0u),
+      v2_pending_overflow_(false)
+{
+    dsp_uso_v2_options_default(&v2_opts_);
+    std::memset(&runtime_info_, 0, sizeof(runtime_info_));
+}
 
 LegacySerialUsoSource::~LegacySerialUsoSource() {
     close();
@@ -452,20 +514,181 @@ int32_t LegacySerialUsoSource::scan_ports_diag(
     return DSP_ERR_NOT_FOUND;
 }
 
+bool LegacySerialUsoSource::write_byte(uint8_t b) {
+    return serial_write_byte(handle_, b);
+}
+
+bool LegacySerialUsoSource::write_bytes(const uint8_t* data, int32_t len) {
+    return serial_write_bytes(handle_, data, len);
+}
+
+int32_t LegacySerialUsoSource::read_exact(uint8_t* buf, int32_t len) {
+    return serial_read_bytes(handle_, buf, len, 80);
+}
+
+bool LegacySerialUsoSource::send_v2_cmd(
+    uint8_t msg_type,
+    const uint8_t* payload,
+    uint8_t payload_len,
+    uint16_t* out_seq
+) {
+    uint16_t seq = v2_seq_++;
+    if (out_seq) *out_seq = seq;
+    uint8_t wire[usov2::kMaxFrame]{};
+    unsigned n = usov2::encode_cmd(msg_type, seq, payload, payload_len, wire);
+    if (n == 0u) return false;
+    return write_bytes(wire, static_cast<int32_t>(n));
+}
+
+bool LegacySerialUsoSource::wait_v2_response(
+    uint8_t expected_msg_type,
+    uint16_t expected_seq,
+    usov2::Frame& out_frame,
+    int32_t timeout_ms
+) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    uint8_t buf[64]{};
+    while (std::chrono::steady_clock::now() < deadline) {
+        int32_t got = serial_read_bytes(handle_, buf, sizeof(buf), 50);
+        if (got <= 0) continue;
+        for (int32_t i = 0; i < got; ++i) {
+            int r = v2_parser_.feed(buf[i], out_frame);
+            if (r == 1) {
+                if (out_frame.msg_type == expected_msg_type &&
+                    (expected_seq == 0u || out_frame.seq == expected_seq)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool LegacySerialUsoSource::try_open_v2(const DspConfig& cfg) {
+    v2_parser_.reset();
+    usov2::HelloRsp hello{};
+
+    auto do_hello = [&]() -> bool {
+        uint16_t seq = 0;
+        if (!send_v2_cmd(usov2::CMD_HELLO, nullptr, 0u, &seq)) return false;
+        usov2::Frame f{};
+        if (!wait_v2_response(usov2::RSP_HELLO, seq, f, 100)) return false;
+        return usov2::unpack_hello_rsp(f.payload, f.payload_len, hello);
+    };
+
+    if (!do_hello()) {
+        /* If device was mid-stream, stop it cleanly and retry HELLO once */
+        (void)send_v2_cmd(usov2::CMD_STOP, nullptr, 0u);
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        purge_serial_handle(handle_);
+        v2_parser_.reset();
+        if (!do_hello()) {
+            return false;
+        }
+    }
+
+    runtime_info_.protocol_version = 2;
+    runtime_info_.uso_id           = static_cast<int32_t>(hello.device_id);
+    runtime_info_.fw_major         = static_cast<int32_t>(hello.fw_major);
+    runtime_info_.fw_minor         = static_cast<int32_t>(hello.fw_minor);
+    runtime_info_.fw_patch         = static_cast<int32_t>(hello.fw_patch);
+    runtime_info_.adc_id           = static_cast<int32_t>(hello.adc_id);
+    runtime_info_.adc_clock_hz     = hello.adc_clock_hz;
+    runtime_info_.hw_fault         = static_cast<int32_t>(hello.fault);
+
+    /* If ADC had a latched fault, attempt one controlled soft-reset via V2! */
+    if (!hello.ready || hello.fault) {
+        uint16_t rseq = 0;
+        if (send_v2_cmd(usov2::CMD_RESET_ADC, nullptr, 0u, &rseq)) {
+            usov2::Frame rf{};
+            if (wait_v2_response(usov2::RSP_ACK, rseq, rf, 2500) &&
+                rf.payload_len >= 2u && rf.payload[1] == usov2::ST_OK) {
+                runtime_info_.hw_fault = 0;
+            }
+        }
+    }
+
+    /* Assemble V2 configuration combining DspConfig + DspUsoV2Options */
+    usov2::WireConfig wcfg{};
+    double f_mhz = std::round(std::max(0.5, cfg.carrier_freq_hz) * 1000.0);
+    wcfg.carrier_freq_mhz   = static_cast<uint16_t>(std::min(65000.0, f_mhz));
+    wcfg.dr_code            = (v2_opts_.adaptive_rate != 0)
+                                  ? static_cast<uint8_t>(usov2::DR_AUTO)
+                                  : static_cast<uint8_t>(std::clamp(v2_opts_.dr_code, 0x04, 0x0B));
+    wcfg.decimation         = static_cast<uint8_t>(std::clamp(v2_opts_.decimation, 0, 16));
+    wcfg.pga_gain           = static_cast<uint8_t>(std::clamp(cfg.gain_index, 0, 5));
+    wcfg.adc_filter         = static_cast<uint8_t>(std::clamp(v2_opts_.adc_filter, 0, 4));
+    wcfg.adc_flags          = static_cast<uint8_t>(
+                                  (v2_opts_.chop_enabled ? usov2::kAdcFlagChop : 0u) |
+                                  (v2_opts_.vbias_enabled ? usov2::kAdcFlagVbias : 0u)
+                              );
+    wcfg.inpmux             = static_cast<uint8_t>(v2_opts_.inpmux ? v2_opts_.inpmux : 0x89);
+    wcfg.dsp_lpf_mode       = static_cast<uint8_t>(std::clamp(v2_opts_.mcu_lpf_mode, 0, 2));
+    wcfg.batch_size         = static_cast<uint8_t>(std::clamp(v2_opts_.batch_size, 0, static_cast<int>(usov2::kMaxBatchSamples)));
+    wcfg.dsp_lpf_cutoff_dhz = (v2_opts_.mcu_lpf_cutoff_hz > 0.0)
+                                  ? static_cast<uint16_t>(std::min(65000.0, std::round(v2_opts_.mcu_lpf_cutoff_hz * 10.0)))
+                                  : 0u;
+    double hpf_hz           = cfg.corrector_enabled
+                                  ? (v2_opts_.mcu_hpf_cutoff_hz > 0.0 ? v2_opts_.mcu_hpf_cutoff_hz : 0.1)
+                                  : 0.0;
+    wcfg.dsp_hpf_cutoff_mhz = static_cast<uint16_t>(std::min(65000.0, std::round(hpf_hz * 1000.0)));
+    wcfg.stream_flags       = v2_opts_.auto_recover ? usov2::kStreamAutoRecover : 0u;
+
+    uint8_t cfg_wire[usov2::kCfgWireLen]{};
+    usov2::pack_config(wcfg, cfg_wire);
+
+    uint16_t start_seq = 0;
+    if (!send_v2_cmd(usov2::CMD_START, cfg_wire, sizeof(cfg_wire), &start_seq)) {
+        return false;
+    }
+
+    usov2::Frame sf{};
+    if (!wait_v2_response(usov2::RSP_START, start_seq, sf, 300)) {
+        return false;
+    }
+
+    usov2::StartRsp srsp{};
+    if (!usov2::unpack_start_rsp(sf.payload, sf.payload_len, srsp) || srsp.status != usov2::ST_OK) {
+        runtime_info_.hw_fault = (srsp.status == usov2::ST_ERR_ADC_FAULT) ? 1 : 0;
+        return false;
+    }
+
+    runtime_info_.dr_code               = static_cast<int32_t>(srsp.dr_code);
+    runtime_info_.decimation            = static_cast<int32_t>(srsp.decimation);
+    runtime_info_.adc_filter            = static_cast<int32_t>(srsp.adc_filter);
+    runtime_info_.chop_enabled          = (srsp.adc_flags & usov2::kAdcFlagChop) ? 1 : 0;
+    runtime_info_.inpmux                = static_cast<int32_t>(srsp.inpmux);
+    runtime_info_.active_sample_rate_hz = static_cast<double>(srsp.effective_fs_dhz) * 0.1;
+    runtime_info_.hw_sample_rate_hz     = static_cast<double>(srsp.hw_fs_dhz) * 0.1;
+
+    v2_active_              = true;
+    v2_have_sample_idx_     = false;
+    v2_expected_sample_idx_ = 0u;
+    v2_pending_overflow_    = false;
+    v2_sample_queue_.clear();
+    return true;
+}
+
 int32_t LegacySerialUsoSource::open(const DspConfig& cfg) {
     close();
-    /* Always operate in USO32 (uco32) 6-byte packet mode: [0x00, B1, B2, B3, B4, 0xFF/0xFE] */
     bit_mode_   = (cfg.uso_bit_mode == 24) ? 24 : 32;
     gain_index_ = cfg.gain_index;
     synced_     = false;
+    v2_active_  = false;
+    std::memset(&runtime_info_, 0, sizeof(runtime_info_));
 
-    handle_ = open_serial_57600_8n1(cfg.port_or_path, 250);
+    handle_ = open_serial_57600_8n1(cfg.port_or_path, 120);
     if (handle_ < 0) return DSP_ERR_PORT_OPEN;
 
-    /* Hardware initialization sequence matching YCO8_1.cpp lines 67-99 (uco32) */
     purge_serial_handle(handle_);
 
-    /* Hardware initialization sequence matching YCO8_1.cpp lines 70-98 (uco32) */
+    /* Auto-negotiate USO-NG Protocol V2 first; seamlessly fall back to Legacy uco32 if not supported */
+    if (try_open_v2(cfg)) {
+        return DSP_OK;
+    }
+
+    /* Legacy fallback initialization sequence (YCO8_1.cpp lines 67-99, uco32) */
+    purge_serial_handle(handle_);
     const uint8_t gain_cmd = legacy_gain_command_byte(cfg.gain_index, bit_mode_);
     const uint8_t freq_cmd = legacy_freq_command_byte(cfg.carrier_freq_hz);
     const uint8_t corr_cmd = cfg.corrector_enabled ? 0x71 : 0x72;
@@ -476,29 +699,83 @@ int32_t LegacySerialUsoSource::open(const DspConfig& cfg) {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     if (!write_byte(corr_cmd)) { close(); return DSP_ERR_PORT_OPEN; }
 
+    runtime_info_.protocol_version      = 1;
+    runtime_info_.active_sample_rate_hz = (cfg.sample_rate_hz > 1.0) ? cfg.sample_rate_hz : 250.0;
+    runtime_info_.hw_sample_rate_hz     = runtime_info_.active_sample_rate_hz;
     return DSP_OK;
 }
 
 void LegacySerialUsoSource::close() {
     if (handle_ >= 0) {
-        /* Stop streaming command 0x10 (YCO8_1.cpp line 343) */
-        write_byte(0x10);
+        if (v2_active_) {
+            (void)send_v2_cmd(usov2::CMD_STOP, nullptr, 0u);
+        } else {
+            (void)write_byte(0x10);
+        }
         close_serial_handle(handle_);
         handle_ = -1;
     }
     synced_ = false;
+    v2_active_ = false;
+    v2_sample_queue_.clear();
 }
 
 bool LegacySerialUsoSource::is_open() const {
     return handle_ >= 0;
 }
 
-bool LegacySerialUsoSource::write_byte(uint8_t b) {
-    return serial_write_byte(handle_, b);
+double LegacySerialUsoSource::effective_sample_rate_hz() const {
+    return runtime_info_.active_sample_rate_hz;
 }
 
-int32_t LegacySerialUsoSource::read_exact(uint8_t* buf, int32_t len) {
-    return serial_read_bytes(handle_, buf, len, 80);
+void LegacySerialUsoSource::set_v2_options(const DspUsoV2Options& opts) {
+    v2_opts_ = opts;
+}
+
+void LegacySerialUsoSource::get_runtime_info(DspUsoRuntimeInfo& out) const {
+    out = runtime_info_;
+    out.crc_errors = runtime_info_.crc_errors + v2_parser_.crc_errors();
+}
+
+int32_t LegacySerialUsoSource::recalibrate() {
+    if (!is_open() || !v2_active_) return DSP_ERR_NOT_FOUND;
+    uint16_t seq = 0;
+    if (!send_v2_cmd(usov2::CMD_RECALIBRATE, nullptr, 0u, &seq)) return DSP_ERR_PORT_OPEN;
+    usov2::Frame f{};
+    if (!wait_v2_response(usov2::RSP_CAL, seq, f, 4000)) return DSP_ERR_PORT_OPEN;
+    return (f.payload_len >= 1u && f.payload[0] == usov2::ST_OK) ? DSP_OK : DSP_ERR_INVALID_ARG;
+}
+
+int32_t LegacySerialUsoSource::reset_adc() {
+    if (!is_open() || !v2_active_) return DSP_ERR_NOT_FOUND;
+    uint16_t seq = 0;
+    if (!send_v2_cmd(usov2::CMD_RESET_ADC, nullptr, 0u, &seq)) return DSP_ERR_PORT_OPEN;
+    usov2::Frame f{};
+    if (!wait_v2_response(usov2::RSP_ACK, seq, f, 3000)) return DSP_ERR_PORT_OPEN;
+    if (f.payload_len >= 2u && f.payload[1] == usov2::ST_OK) {
+        runtime_info_.hw_fault = 0;
+        return DSP_OK;
+    }
+    return DSP_ERR_INVALID_ARG;
+}
+
+int32_t LegacySerialUsoSource::refresh_diagnostics() {
+    if (!is_open() || !v2_active_) return DSP_ERR_NOT_FOUND;
+    uint16_t seq = 0;
+    if (!send_v2_cmd(usov2::CMD_GET_DIAG, nullptr, 0u, &seq)) return DSP_ERR_PORT_OPEN;
+    usov2::Frame f{};
+    if (!wait_v2_response(usov2::RSP_DIAG, seq, f, 200)) return DSP_ERR_PORT_OPEN;
+    usov2::DiagRsp d{};
+    if (!usov2::unpack_diag_rsp(f.payload, f.payload_len, d)) return DSP_ERR_INVALID_ARG;
+    runtime_info_.missed_drdy    = d.missed_drdy;
+    runtime_info_.tx_overflows   = d.tx_overflows;
+    runtime_info_.crc_errors     = d.v2_crc_errors;
+    runtime_info_.adc_status     = static_cast<int32_t>(d.adc_status);
+    runtime_info_.hw_fault       = (d.state_flags & 4u) ? 1 : 0;
+    if (d.dropped_samples > runtime_info_.dropped_samples) {
+        runtime_info_.dropped_samples = d.dropped_samples;
+    }
+    return DSP_OK;
 }
 
 bool LegacySerialUsoSource::resync_stream() {
@@ -509,7 +786,6 @@ bool LegacySerialUsoSource::resync_stream() {
         if (read_exact(&cur, 1) != 1) return false;
         if ((prev == 0xFF || prev == 0xFE) && cur == 0x00) {
             uint8_t discard[8]{};
-            /* Consume remaining payload + trailer and verify packet framing boundary */
             if (read_exact(discard, payload_bytes + 1) == payload_bytes + 1) {
                 const uint8_t trailer = discard[payload_bytes];
                 if (trailer == 0xFF || trailer == 0xFE) {
@@ -526,6 +802,72 @@ bool LegacySerialUsoSource::resync_stream() {
     return false;
 }
 
+int32_t LegacySerialUsoSource::read_samples_v2(
+    double* out_samples,
+    int32_t max_samples,
+    int32_t* out_overflow
+) {
+    int32_t count = 0;
+    if (out_overflow) *out_overflow = 0;
+
+    auto drain_queue = [&]() {
+        while (count < max_samples && !v2_sample_queue_.empty()) {
+            out_samples[count++] = v2_sample_queue_.front();
+            v2_sample_queue_.pop_front();
+        }
+        if (v2_pending_overflow_ && count > 0) {
+            if (out_overflow) *out_overflow = 1;
+            v2_pending_overflow_ = false;
+        }
+    };
+
+    drain_queue();
+    if (count >= max_samples) return count;
+
+    uint8_t raw[128]{};
+    int32_t got = serial_read_bytes(handle_, raw, sizeof(raw), 60);
+    if (got <= 0) return count;
+
+    usov2::Frame frame{};
+    for (int32_t i = 0; i < got; ++i) {
+        int r = v2_parser_.feed(raw[i], frame);
+        if (r != 1) continue;
+
+        if (frame.msg_type == usov2::MSG_DATA_BATCH) {
+            usov2::DataBatch batch{};
+            if (usov2::unpack_batch(frame.payload, frame.payload_len, batch)) {
+                runtime_info_.rx_packets++;
+                if (v2_have_sample_idx_ && batch.first_sample_idx > v2_expected_sample_idx_) {
+                    runtime_info_.dropped_samples += (batch.first_sample_idx - v2_expected_sample_idx_);
+                }
+                v2_have_sample_idx_ = true;
+                v2_expected_sample_idx_ = batch.first_sample_idx + batch.sample_count;
+
+                if (batch.flags & usov2::kBatchPgaOvf) {
+                    v2_pending_overflow_ = true;
+                }
+                if (batch.effective_fs_dhz > 0u) {
+                    runtime_info_.active_sample_rate_hz = static_cast<double>(batch.effective_fs_dhz) * 0.1;
+                }
+                for (uint8_t k = 0; k < batch.sample_count; ++k) {
+                    v2_sample_queue_.push_back(static_cast<double>(batch.samples[k]));
+                }
+            }
+        } else if (frame.msg_type == usov2::RSP_DIAG) {
+            usov2::DiagRsp d{};
+            if (usov2::unpack_diag_rsp(frame.payload, frame.payload_len, d)) {
+                runtime_info_.missed_drdy  = d.missed_drdy;
+                runtime_info_.tx_overflows = d.tx_overflows;
+                runtime_info_.adc_status   = static_cast<int32_t>(d.adc_status);
+                runtime_info_.hw_fault     = (d.state_flags & 4u) ? 1 : 0;
+            }
+        }
+    }
+
+    drain_queue();
+    return count;
+}
+
 int32_t LegacySerialUsoSource::read_samples(
     double* out_samples,
     int32_t max_samples,
@@ -533,6 +875,10 @@ int32_t LegacySerialUsoSource::read_samples(
 ) {
     if (!is_open() || !out_samples || max_samples <= 0) return DSP_ERR_INVALID_ARG;
     if (out_overflow) *out_overflow = 0;
+
+    if (v2_active_) {
+        return read_samples_v2(out_samples, max_samples, out_overflow);
+    }
 
     if (!synced_ && !resync_stream()) {
         return 0;
@@ -555,8 +901,10 @@ int32_t LegacySerialUsoSource::read_samples(
         if (rc == DSP_ERR_OVERFLOW) {
             if (out_overflow) *out_overflow = 1;
             out_samples[count++] = static_cast<double>(sample);
+            runtime_info_.rx_packets++;
         } else if (rc == DSP_OK) {
             out_samples[count++] = static_cast<double>(sample);
+            runtime_info_.rx_packets++;
         } else {
             synced_ = false;
             if (!resync_stream()) break;
@@ -567,13 +915,25 @@ int32_t LegacySerialUsoSource::read_samples(
 }
 
 int32_t LegacySerialUsoSource::set_gain(int32_t gain_index) {
-    gain_index_ = gain_index;
+    gain_index_ = std::clamp(gain_index, 0, 5);
     if (!is_open()) return DSP_OK;
+    if (v2_active_) {
+        uint8_t live[usov2::kLiveWireLen]{};
+        usov2::pack_live(usov2::kLiveMaskGain, static_cast<uint8_t>(gain_index_), 0u, 0u, 0u, 0u, live);
+        return send_v2_cmd(usov2::CMD_SET_LIVE, live, sizeof(live)) ? DSP_OK : DSP_ERR_PORT_OPEN;
+    }
     return write_byte(legacy_gain_command_byte(gain_index_, bit_mode_)) ? DSP_OK : DSP_ERR_PORT_OPEN;
 }
 
 int32_t LegacySerialUsoSource::set_corrector(bool enabled) {
     if (!is_open()) return DSP_OK;
+    if (v2_active_) {
+        double hpf_hz = enabled ? (v2_opts_.mcu_hpf_cutoff_hz > 0.0 ? v2_opts_.mcu_hpf_cutoff_hz : 0.1) : 0.0;
+        uint16_t hpf_mhz = static_cast<uint16_t>(std::min(65000.0, std::round(hpf_hz * 1000.0)));
+        uint8_t live[usov2::kLiveWireLen]{};
+        usov2::pack_live(usov2::kLiveMaskHpf, 0u, 0u, 0u, 0u, hpf_mhz, live);
+        return send_v2_cmd(usov2::CMD_SET_LIVE, live, sizeof(live)) ? DSP_OK : DSP_ERR_PORT_OPEN;
+    }
     return write_byte(enabled ? 0x71 : 0x72) ? DSP_OK : DSP_ERR_PORT_OPEN;
 }
 
@@ -660,8 +1020,6 @@ int32_t SmpFilePlayerSource::open(const DspConfig& cfg) {
     file_ = open_file_utf8_rb(cfg.port_or_path);
     if (!file_) return DSP_ERR_FILE_OPEN;
 
-    /* Legacy PROWODKA .smp recordings begin with a 2048-byte text passport header ("----...")
-     * (Player.h lines 20-21). Skip it automatically while staying compatible with raw headerless files. */
     char magic[4]{};
     if (std::fread(magic, 1, 4, file_) == 4 && std::memcmp(magic, "----", 4) == 0) {
         if (std::fseek(file_, 2048, SEEK_SET) != 0) {
@@ -703,19 +1061,18 @@ int32_t SmpFilePlayerSource::read_samples(
 
     std::vector<int32_t> raw(static_cast<size_t>(max_samples));
     size_t got = std::fread(raw.data(), sizeof(int32_t), raw.size(), file_);
-    if (got == 0) return 0; /* EOF */
+    if (got == 0) return 0;
 
     for (size_t i = 0; i < got; ++i) {
         int32_t v = raw[i];
         if (bit_mode_ == 24) {
-            v = v >> 8; /* Matches YCO8_1.cpp line 134 */
+            v = v >> 8;
         }
         out_samples[i] = static_cast<double>(v);
     }
 
     samples_read_ += got;
 
-    /* Real-time pacing when playback_speed_ > 0 (0 = instant offline processing) */
     if (playback_speed_ > 0 && sample_rate_hz_ > 0.0) {
         double block_us = (static_cast<double>(got) * 1e6) / (sample_rate_hz_ * static_cast<double>(playback_speed_));
         if (block_us >= 200.0) {

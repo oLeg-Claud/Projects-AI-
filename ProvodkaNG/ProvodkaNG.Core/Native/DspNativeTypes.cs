@@ -273,3 +273,53 @@ public struct DspCallbacksNative
     public nint OnSignal;
     public nint UserData;
 }
+
+/// <summary>
+/// Blittable 1:1 mirror of C struct DspUsoV2Options (sizeof = 56 bytes, align = 8).
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct DspUsoV2OptionsNative
+{
+    public int AdaptiveRate;
+    public int DrCode;
+    public int Decimation;
+    public int AdcFilter;
+    public int ChopEnabled;
+    public int VbiasEnabled;
+    public int Inpmux;
+    public int McuLpfMode;
+    public double McuLpfCutoffHz;
+    public double McuHpfCutoffHz;
+    public int BatchSize;
+    public int AutoRecover;
+}
+
+/// <summary>
+/// Blittable 1:1 mirror of C struct DspUsoRuntimeInfo (sizeof = 96 bytes, align = 8).
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct DspUsoRuntimeInfoNative
+{
+    public int ProtocolVersion;
+    public int UsoId;
+    public int FwMajor;
+    public int FwMinor;
+    public int FwPatch;
+    public int AdcId;
+    public int DrCode;
+    public int Decimation;
+    public int AdcFilter;
+    public int ChopEnabled;
+    public int Inpmux;
+    public int AdcStatus;
+    public int HwFault;
+    public int ReservedPad;
+    public double ActiveSampleRateHz;
+    public double HwSampleRateHz;
+    public uint AdcClockHz;
+    public uint CrcErrors;
+    public uint DroppedSamples;
+    public uint MissedDrdy;
+    public uint TxOverflows;
+    public uint RxPackets;
+}

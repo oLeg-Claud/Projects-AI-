@@ -21,6 +21,7 @@ struct DspEngine {
     };
 
     DspConfig       cfg{};
+    DspUsoV2Options v2_opts{};
     DspCallbacks    callbacks{};
     dsp::FirFilter            fir;
     dsp::VirtualGridResampler resampler;
@@ -290,6 +291,7 @@ DSPCORE_API DspEngine* DSPCORE_CALL dsp_create(const DspConfig* cfg, const DspCa
     } else {
         dsp_config_default(&eng->cfg);
     }
+    dsp_uso_v2_options_default(&eng->v2_opts);
 
     if (callbacks) {
         eng->callbacks = *callbacks;
@@ -365,8 +367,13 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_start(DspEngine* engine) {
             default:
                 return DSP_ERR_INVALID_ARG;
         }
+        src->set_v2_options(engine->v2_opts);
         int32_t rc = src->open(local_cfg);
         if (rc != DSP_OK) return rc;
+        const double neg_fs = src->effective_sample_rate_hz();
+        if (neg_fs > 1.0) {
+            engine->cfg.sample_rate_hz = neg_fs;
+        }
         engine->source = std::move(src);
         engine->rebuild_pipeline_locked();
     }
@@ -479,6 +486,63 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_parse_legacy_packet(
     int32_t* out_sample
 ) {
     return dsp::LegacySerialUsoSource::parse_packet(packet, packet_len, bit_mode, out_sample);
+}
+
+DSPCORE_API void DSPCORE_CALL dsp_uso_v2_options_default(DspUsoV2Options* opts) {
+    if (!opts) return;
+    std::memset(opts, 0, sizeof(DspUsoV2Options));
+    opts->adaptive_rate     = 1;
+    opts->dr_code           = dsp::usov2::DR_400;
+    opts->decimation        = 0; /* auto */
+    opts->adc_filter        = dsp::usov2::FLT_SINC4;
+    opts->chop_enabled      = 0;
+    opts->vbias_enabled     = 1;
+    opts->inpmux            = 0x89;
+    opts->mcu_lpf_mode      = dsp::usov2::LPF_BYPASS;
+    opts->mcu_lpf_cutoff_hz = 0.0; /* auto */
+    opts->mcu_hpf_cutoff_hz = 0.1;
+    opts->batch_size        = 0; /* auto */
+    opts->auto_recover      = 1;
+}
+
+DSPCORE_API int32_t DSPCORE_CALL dsp_set_uso_v2_options(DspEngine* engine, const DspUsoV2Options* opts) {
+    if (!engine || !opts) return DSP_ERR_INVALID_ARG;
+    std::lock_guard<std::mutex> lock(engine->mutex);
+    engine->v2_opts = *opts;
+    if (engine->source) {
+        engine->source->set_v2_options(*opts);
+    }
+    return DSP_OK;
+}
+
+DSPCORE_API int32_t DSPCORE_CALL dsp_get_uso_info(DspEngine* engine, DspUsoRuntimeInfo* out_info) {
+    if (!engine || !out_info) return DSP_ERR_INVALID_ARG;
+    std::lock_guard<std::mutex> lock(engine->mutex);
+    if (engine->source) {
+        engine->source->get_runtime_info(*out_info);
+    } else {
+        std::memset(out_info, 0, sizeof(DspUsoRuntimeInfo));
+        out_info->active_sample_rate_hz = engine->cfg.sample_rate_hz;
+    }
+    return DSP_OK;
+}
+
+DSPCORE_API int32_t DSPCORE_CALL dsp_uso_recalibrate(DspEngine* engine) {
+    if (!engine) return DSP_ERR_INVALID_ARG;
+    std::lock_guard<std::mutex> lock(engine->mutex);
+    return engine->source ? engine->source->recalibrate() : DSP_ERR_NOT_FOUND;
+}
+
+DSPCORE_API int32_t DSPCORE_CALL dsp_uso_reset_adc(DspEngine* engine) {
+    if (!engine) return DSP_ERR_INVALID_ARG;
+    std::lock_guard<std::mutex> lock(engine->mutex);
+    return engine->source ? engine->source->reset_adc() : DSP_ERR_NOT_FOUND;
+}
+
+DSPCORE_API int32_t DSPCORE_CALL dsp_uso_refresh_diag(DspEngine* engine) {
+    if (!engine) return DSP_ERR_INVALID_ARG;
+    std::lock_guard<std::mutex> lock(engine->mutex);
+    return engine->source ? engine->source->refresh_diagnostics() : DSP_ERR_NOT_FOUND;
 }
 
 } /* extern "C" */

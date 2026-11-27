@@ -126,10 +126,36 @@ public static unsafe class DspNativeMethods
         int bufLen,
         out int outUsoId);
 
+    [DllImport(LibraryName, EntryPoint = "dsp_scan_legacy_uso_diag", CallingConvention = CallingConvention.StdCall)]
+    public static extern DspStatusCode ScanLegacyUsoDiag(
+        byte* outPortBuf,
+        int bufLen,
+        out int outUsoId,
+        byte* outDiagBuf,
+        int diagLen);
+
     [DllImport(LibraryName, EntryPoint = "dsp_parse_legacy_packet", CallingConvention = CallingConvention.StdCall)]
     public static extern DspStatusCode ParseLegacyPacket(
         byte* packet,
         int packetLen,
         int bitMode,
         out int outSample);
+
+    [DllImport(LibraryName, EntryPoint = "dsp_uso_v2_options_default", CallingConvention = CallingConvention.StdCall)]
+    public static extern void UsoV2OptionsDefault(out DspUsoV2OptionsNative opts);
+
+    [DllImport(LibraryName, EntryPoint = "dsp_set_uso_v2_options", CallingConvention = CallingConvention.StdCall)]
+    public static extern DspStatusCode SetUsoV2Options(nint engine, in DspUsoV2OptionsNative opts);
+
+    [DllImport(LibraryName, EntryPoint = "dsp_get_uso_info", CallingConvention = CallingConvention.StdCall)]
+    public static extern DspStatusCode GetUsoInfo(nint engine, out DspUsoRuntimeInfoNative outInfo);
+
+    [DllImport(LibraryName, EntryPoint = "dsp_uso_recalibrate", CallingConvention = CallingConvention.StdCall)]
+    public static extern DspStatusCode UsoRecalibrate(nint engine);
+
+    [DllImport(LibraryName, EntryPoint = "dsp_uso_reset_adc", CallingConvention = CallingConvention.StdCall)]
+    public static extern DspStatusCode UsoResetAdc(nint engine);
+
+    [DllImport(LibraryName, EntryPoint = "dsp_uso_refresh_diag", CallingConvention = CallingConvention.StdCall)]
+    public static extern DspStatusCode UsoRefreshDiag(nint engine);
 }

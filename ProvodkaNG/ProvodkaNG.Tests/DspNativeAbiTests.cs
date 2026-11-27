@@ -22,6 +22,11 @@ public sealed class DspNativeAbiTests
         Assert.Equal(576, sizeof(DspFrameDataNative));
         Assert.Equal(24, sizeof(DspSignalBlockNative));
         Assert.Equal(40, sizeof(DspCallbacksNative));
+        Assert.Equal(56, sizeof(DspUsoV2OptionsNative));
+        Assert.Equal(96, sizeof(DspUsoRuntimeInfoNative));
+        Assert.Equal(32, (int)Marshal.OffsetOf<DspUsoV2OptionsNative>(nameof(DspUsoV2OptionsNative.McuLpfCutoffHz)));
+        Assert.Equal(56, (int)Marshal.OffsetOf<DspUsoRuntimeInfoNative>(nameof(DspUsoRuntimeInfoNative.ActiveSampleRateHz)));
+        Assert.Equal(72, (int)Marshal.OffsetOf<DspUsoRuntimeInfoNative>(nameof(DspUsoRuntimeInfoNative.AdcClockHz)));
 
         Assert.Equal(4, (int)Marshal.OffsetOf<DspConfigNative>(nameof(DspConfigNative.PortOrPath)));
         Assert.Equal(264, (int)Marshal.OffsetOf<DspConfigNative>(nameof(DspConfigNative.UsoBitMode)));

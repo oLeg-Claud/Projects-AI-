@@ -16,6 +16,10 @@ namespace ProvodkaNG.Desktop.ViewModels;
 
 public sealed record FormatOption(DspFrameFormat Format, string DisplayName);
 public sealed record SpeedOption(int Multiplier, string DisplayName);
+public sealed record RateModeOption(bool Adaptive, int DrCode, int Decimation, string DisplayName);
+public sealed record AdcFilterOption(int FilterCode, string DisplayName);
+public sealed record McuLpfOption(int ModeCode, string DisplayName);
+public sealed record InputMuxOption(int MuxCode, string DisplayName);
 
 public sealed record VectorCellViewModel(
     int Index,
@@ -98,6 +102,40 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public IReadOnlyList<int> GainIndices { get; } = [0, 1, 2, 3, 4, 5];
     public IReadOnlyList<int> Codebooks { get; } = [0, 1];
 
+    public IReadOnlyList<RateModeOption> RateModeOptions { get; } =
+    [
+        new(true,  0x08, 0, "Авто (под несущую)"),
+        new(false, 0x08, 1, "400 Гц (×1)"),
+        new(false, 0x08, 2, "200 Гц (400 / 2)"),
+        new(false, 0x07, 1, "100 Гц (Sinc)"),
+        new(false, 0x06, 1, "60 Гц (Sinc)"),
+        new(false, 0x05, 1, "50 Гц (Sinc)"),
+        new(false, 0x09, 1, "1200 Гц (×1)")
+    ];
+
+    public IReadOnlyList<AdcFilterOption> AdcFilterOptions { get; } =
+    [
+        new(3, "Sinc4 (рек.)"),
+        new(2, "Sinc3"),
+        new(1, "Sinc2"),
+        new(0, "Sinc1")
+    ];
+
+    public IReadOnlyList<McuLpfOption> McuLpfOptions { get; } =
+    [
+        new(0, "Bypass (линейная фаза)"),
+        new(1, "Баттерворт 4-го пор."),
+        new(2, "Legacy 10-го пор.")
+    ];
+
+    public IReadOnlyList<InputMuxOption> InputMuxOptions { get; } =
+    [
+        new(0x89, "Сейсмодатчик (AIN8/9)"),
+        new(0xFF, "Замыкание входа (шум)"),
+        new(0xBB, "Датчик темп. АЦП"),
+        new(0xCC, "Контроль AVDD")
+    ];
+
     public ObservableCollection<VectorCellViewModel> DecodedVectors { get; } = [];
 
     // --- Avalonia Dock Manager Layout ---
@@ -113,12 +151,21 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _detectedPort = string.Empty;
     [ObservableProperty] private int _detectedUsoId;
     [ObservableProperty] private int _reinitCount;
-    [ObservableProperty] private string _statusBanner = "Автопоиск УСО32 (57600 8N1, uco32)...";
+    [ObservableProperty] private string _statusBanner = "Автопоиск УСО32 (V2 / Legacy uco32)...";
     [ObservableProperty] private string _simdIsa = "—";
+    [ObservableProperty] private bool _isUsoV2Active;
+    [ObservableProperty] private string _activeProtocolLabel = "Автоопределение (V2 / Legacy)";
+    [ObservableProperty] private double _activeSampleRateHz = 250.0;
+    [ObservableProperty] private string _usoDiagSummary = "Пак: 0 • CRC: 0 • Проп: 0";
 
-    // --- USO32 & DSP Configuration (always uco32 6-byte, 0x90..0x95) ---
+    // --- USO32 & DSP Configuration (Dual-Mode V2 + Legacy uco32 fallback) ---
     [ObservableProperty] private FormatOption _selectedFormat;
     [ObservableProperty] private SpeedOption _selectedSpeed;
+    [ObservableProperty] private RateModeOption _selectedRateMode;
+    [ObservableProperty] private AdcFilterOption _selectedAdcFilter;
+    [ObservableProperty] private McuLpfOption _selectedMcuLpfMode;
+    [ObservableProperty] private InputMuxOption _selectedInputMux;
+    [ObservableProperty] private bool _chopEnabled;
     [ObservableProperty] private string _firFilePath = string.Empty;
     [ObservableProperty] private int _gainIndex = 0;
     [ObservableProperty] private double _carrierFreqHz = 5.0;
@@ -186,6 +233,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _selectedFormat = FormatOptions[0];
         _selectedSpeed = SpeedOptions[0];
+        _selectedRateMode = RateModeOptions[0];
+        _selectedAdcFilter = AdcFilterOptions[0];
+        _selectedMcuLpfMode = McuLpfOptions[0];
+        _selectedInputMux = InputMuxOptions[0];
 
         _dockFactory = new ProvodkaDockFactory(this);
         ResetDockLayout();
@@ -226,6 +277,47 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             _forceReinitRequested = true;
         }
     }
+
+    partial void OnSelectedRateModeChanged(RateModeOption value)
+    {
+        if (!_isSmpMode && IsConnected) _forceReinitRequested = true;
+    }
+
+    partial void OnSelectedAdcFilterChanged(AdcFilterOption value)
+    {
+        if (!_isSmpMode && IsConnected) _forceReinitRequested = true;
+    }
+
+    partial void OnSelectedMcuLpfModeChanged(McuLpfOption value)
+    {
+        if (!_isSmpMode && IsConnected) _forceReinitRequested = true;
+    }
+
+    partial void OnSelectedInputMuxChanged(InputMuxOption value)
+    {
+        if (!_isSmpMode && IsConnected) _forceReinitRequested = true;
+    }
+
+    partial void OnChopEnabledChanged(bool value)
+    {
+        if (!_isSmpMode && IsConnected) _forceReinitRequested = true;
+    }
+
+    public UsoV2Options BuildUsoV2Options() => new()
+    {
+        AdaptiveRate = SelectedRateMode.Adaptive,
+        DrCode = SelectedRateMode.DrCode,
+        Decimation = SelectedRateMode.Decimation,
+        AdcFilter = SelectedAdcFilter.FilterCode,
+        ChopEnabled = ChopEnabled,
+        VbiasEnabled = true,
+        Inpmux = SelectedInputMux.MuxCode,
+        McuLpfMode = SelectedMcuLpfMode.ModeCode,
+        McuLpfCutoffHz = 0.0,
+        McuHpfCutoffHz = CorrectorEnabled ? 0.1 : 0.0,
+        BatchSize = 0,
+        AutoRecover = true
+    };
 
     public DspSettings BuildSettings(DspSourceType sourceType, string portOrPath)
     {
@@ -286,6 +378,35 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         ActiveSmpFileName = string.Empty;
         _forceReinitRequested = true;
         StatusBanner = "Принудительный поиск и переинициализация УСО32...";
+    }
+
+    [RelayCommand]
+    private void RecalibrateUso()
+    {
+        if (_engine is null || !IsUsoV2Active)
+        {
+            StatusBanner = "Самокалибровка доступна только в режиме протокола УСО32 V2.";
+            return;
+        }
+        DspStatusCode rc = _engine.RecalibrateUso();
+        StatusBanner = rc == DspStatusCode.Ok
+            ? "Самокалибровка смещения ADS1262 (6 ступеней PGA) выполнена успешно."
+            : $"Ошибка самокалибровки УСО32 V2 ({rc}).";
+    }
+
+    [RelayCommand]
+    private void ResetUsoAdc()
+    {
+        if (_engine is null || !IsUsoV2Active)
+        {
+            ForceReinitUso();
+            return;
+        }
+        DspStatusCode rc = _engine.ResetUsoAdc();
+        StatusBanner = rc == DspStatusCode.Ok
+            ? "Аппаратный сброс ADS1262 выполнен — перезапуск потока..."
+            : $"Ошибка сброса АЦП ({rc}) — выполняется переинициализация...";
+        _forceReinitRequested = true;
     }
 
     [RelayCommand]
@@ -401,8 +522,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             Array.Copy(_firRing, 0, firSnap, tailLen, _ringHead);
         }
 
+        double fsForFft = ActiveSampleRateHz > 1.0 ? ActiveSampleRateHz : 250.0;
         SpectrumSnapshot? spec = validCount >= 64
-            ? SignalAnalyzer.ComputeSpectrum(firSnap.AsSpan(Math.Max(0, SignalWindowLength - Math.Min(validCount, FftWindowLength))), 250.0, FftWindowLength)
+            ? SignalAnalyzer.ComputeSpectrum(firSnap.AsSpan(Math.Max(0, SignalWindowLength - Math.Min(validCount, FftWindowLength))), fsForFft, FftWindowLength)
             : null;
 
         _dispatchToUi(() =>
@@ -483,7 +605,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             IsConnected = false;
             ModeBadge = "ПОИСК УСО32";
             DetectedUsoLabel = "Сканирование портов...";
-            StatusBanner = "Автопоиск УСО32 по COM-портам (0xAA → 0x66)...";
+            StatusBanner = "Автопоиск УСО32 по COM-портам (V2 / Legacy 0x66)...";
         });
 
         UsoProbeResult probe = _usoScanner();
@@ -515,17 +637,33 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         _lastSampleTickMs = Environment.TickCount64;
+        UsoRuntimeInfo? info = _engine?.GetUsoInfo();
+        double negotiatedFs = (info is not null && info.ActiveSampleRateHz > 1.0) ? info.ActiveSampleRateHz : 250.0;
+        bool v2 = info?.IsV2 == true;
+        string protoLabel = v2
+            ? $"V2 CRC16 ({info!.FirmwareVersionText}) • {negotiatedFs:0.#} Гц"
+            : $"Legacy uco32 • {negotiatedFs:0.#} Гц";
+
         _dispatchToUi(() =>
         {
             IsConnected = true;
+            IsUsoV2Active = v2;
+            ActiveSampleRateHz = negotiatedFs;
+            ActiveProtocolLabel = protoLabel;
             DetectedPort = probe.PortName;
             DetectedUsoId = probe.UsoId;
-            DetectedUsoLabel = $"{probe.PortName} (УСО32 #{probe.UsoId})";
-            ModeBadge = "УСО32 ОНЛАЙН";
-            StatusBanner = $"УСО32 #{probe.UsoId} активно на {probe.PortName} • 57600 8N1 (uco32) • SIMD: {SimdIsa}";
+            DetectedUsoLabel = v2
+                ? $"{probe.PortName} (УСО32 #{probe.UsoId} V2)"
+                : $"{probe.PortName} (УСО32 #{probe.UsoId})";
+            ModeBadge = v2 ? "УСО32 V2" : "УСО32 LEGACY";
+            StepH = _engine?.CurrentStepH ?? StepH;
+            StatusBanner = v2
+                ? $"УСО32 #{probe.UsoId} V2 ({info!.FirmwareVersionText}) на {probe.PortName} • Fs={negotiatedFs:0.#} Гц (АЦП {info.HwSampleRateHz:0.#} Гц / ÷{info.Decimation}) • SIMD: {SimdIsa}"
+                : $"УСО32 #{probe.UsoId} (Legacy uco32) на {probe.PortName} • 57600 8N1 • SIMD: {SimdIsa}";
         });
 
-        // Watchdog loop: monitor hardware stream health & auto-reinit on stall or disconnect
+        // Watchdog loop: monitor hardware stream health, poll V2 diagnostics & auto-reinit on stall or disconnect
+        int diagTick = 0;
         while (!ct.IsCancellationRequested && !_forceReinitRequested && !_isSmpMode)
         {
             await Task.Delay(350, ct);
@@ -538,6 +676,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 _dispatchToUi(() =>
                 {
                     IsConnected = false;
+                    IsUsoV2Active = false;
                     ReinitCount++;
                     ModeBadge = "ПЕРЕИНИЦИАЛИЗАЦИЯ";
                     StatusBanner = $"Потеря потока данных с {probe.PortName} ({silenceMs} мс) — переинициализация УСО32...";
@@ -545,6 +684,25 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 DisposeEngine();
                 await DelayWithWakeupAsync(800, ct);
                 return;
+            }
+
+            if (++diagTick >= 6 && _engine is not null)
+            {
+                diagTick = 0;
+                if (v2) _engine.RefreshUsoDiagnostics();
+                UsoRuntimeInfo? liveInfo = _engine.GetUsoInfo();
+                if (liveInfo is not null)
+                {
+                    string diagLine = liveInfo.IsV2
+                        ? $"Пак: {liveInfo.RxPackets} • CRC: {liveInfo.CrcErrors} • Проп: {liveInfo.DroppedSamples} • DRDY: {liveInfo.MissedDrdy}"
+                        : $"Пак: {liveInfo.RxPackets} • Режим: Legacy uco32";
+                    _dispatchToUi(() =>
+                    {
+                        UsoDiagSummary = diagLine;
+                        if (liveInfo.ActiveSampleRateHz > 1.0)
+                            ActiveSampleRateHz = liveInfo.ActiveSampleRateHz;
+                    });
+                }
             }
         }
     }
@@ -571,6 +729,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _dispatchToUi(() =>
         {
             IsConnected = true;
+            IsUsoV2Active = false;
+            ActiveSampleRateHz = 250.0;
+            ActiveProtocolLabel = "Файл .smp • 250 Гц";
             ModeBadge = "ПЛЕЕР .SMP";
             DetectedUsoLabel = $"Файл: {Path.GetFileName(smpPath)}";
             StatusBanner = $"Воспроизведение .smp: {Path.GetFileName(smpPath)} ({SelectedSpeed.DisplayName}) • SIMD: {SimdIsa}";
@@ -616,6 +777,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _engine = _engineFactory(settings);
         string isa = _engine.SimdIsa;
         _dispatchToUi(() => SimdIsa = isa);
+
+        _engine.SetUsoV2Options(BuildUsoV2Options());
 
         if (!string.IsNullOrWhiteSpace(settings.FirFilePath))
         {

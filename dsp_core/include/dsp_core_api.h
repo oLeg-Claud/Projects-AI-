@@ -288,6 +288,75 @@ DSPCORE_API int32_t DSPCORE_CALL dsp_parse_legacy_packet(
     int32_t* out_sample
 );
 
+/* ============================================================================
+ * USO-32 Dual-Mode Protocol V2 Extensions (Strictly Additive C ABI)
+ * ============================================================================ */
+
+/**
+ * Hardware & on-MCU DSP options for USO-32 Protocol V2 (sizeof = 56 bytes, align = 8).
+ * Ignored gracefully when connected to a legacy USO32 device.
+ */
+typedef struct DspUsoV2Options {
+    int32_t adaptive_rate;      /* 1 = auto select ADS1262 DR+decim from carrier_freq_hz, 0 = manual */
+    int32_t dr_code;            /* 0x04(20), 0x05(50), 0x06(60), 0x07(100), 0x08(400), 0x09(1200), 0x0A(2400) */
+    int32_t decimation;         /* 0 = auto, or 1..16 */
+    int32_t adc_filter;         /* 0=Sinc1, 1=Sinc2, 2=Sinc3, 3=Sinc4, 4=FIR(<=20 SPS) */
+    int32_t chop_enabled;       /* 0 = off, 1 = ADS1262 CHOP enabled */
+    int32_t vbias_enabled;      /* 1 = enable ADS1262 VBIAS level-shift */
+    int32_t inpmux;             /* 0x89=AIN8/9, 0xFF=short, 0xBB=temp, 0xCC=AVDD, 0xDD=DVDD */
+    int32_t mcu_lpf_mode;       /* 0=Bypass (linear phase), 1=Dynamic Butter4, 2=Legacy Butter10 */
+    double  mcu_lpf_cutoff_hz;  /* 0.0 = auto (~2.5 * carrier) */
+    double  mcu_hpf_cutoff_hz;  /* 0.0 = off, 0.1 = default DC blocker */
+    int32_t batch_size;         /* 0 = auto (~25 ms cadence), or 1..10 samples/frame */
+    int32_t auto_recover;       /* 1 = V2 auto-recover transient ADC/USB glitches */
+} DspUsoV2Options;
+
+/**
+ * Active hardware/protocol runtime telemetry & diagnostics (sizeof = 96 bytes, align = 8).
+ */
+typedef struct DspUsoRuntimeInfo {
+    int32_t  protocol_version;      /* 0 = disconnected, 1 = Legacy uco32, 2 = USO-NG V2 */
+    int32_t  uso_id;                /* Device number (1..255) */
+    int32_t  fw_major;
+    int32_t  fw_minor;
+    int32_t  fw_patch;
+    int32_t  adc_id;                /* ADS1262 ID register */
+    int32_t  dr_code;
+    int32_t  decimation;
+    int32_t  adc_filter;
+    int32_t  chop_enabled;
+    int32_t  inpmux;
+    int32_t  adc_status;            /* Latest ADS1262 STATUS byte */
+    int32_t  hw_fault;              /* 1 if MCU reports ADC fault */
+    int32_t  reserved_pad;
+    double   active_sample_rate_hz; /* Exact active sample rate fed to VirtualGridResampler */
+    double   hw_sample_rate_hz;     /* Raw ADS1262 hardware DR before decimation */
+    uint32_t adc_clock_hz;          /* 7372800 (internal) or 4608000 (external Rev P X1) */
+    uint32_t crc_errors;            /* Host + MCU V2 CRC-16 errors */
+    uint32_t dropped_samples;       /* Detected sample gaps */
+    uint32_t missed_drdy;
+    uint32_t tx_overflows;
+    uint32_t rx_packets;
+} DspUsoRuntimeInfo;
+
+/** Populate DspUsoV2Options with optimal adaptive defaults. */
+DSPCORE_API void DSPCORE_CALL dsp_uso_v2_options_default(DspUsoV2Options* opts);
+
+/** Apply V2 hardware/DSP options to an engine (takes effect immediately on next start or live if supported). */
+DSPCORE_API int32_t DSPCORE_CALL dsp_set_uso_v2_options(DspEngine* engine, const DspUsoV2Options* opts);
+
+/** Copy active USO protocol version, negotiated sample rate, and diagnostics. */
+DSPCORE_API int32_t DSPCORE_CALL dsp_get_uso_info(DspEngine* engine, DspUsoRuntimeInfo* out_info);
+
+/** Trigger on-device ADS1262 self-offset calibration (V2 only). */
+DSPCORE_API int32_t DSPCORE_CALL dsp_uso_recalibrate(DspEngine* engine);
+
+/** Trigger controlled ADS1262 hardware reset + re-init without power cycling (V2 only). */
+DSPCORE_API int32_t DSPCORE_CALL dsp_uso_reset_adc(DspEngine* engine);
+
+/** Query live MCU diagnostic counters over V2 CMD_GET_DIAG and update runtime info. */
+DSPCORE_API int32_t DSPCORE_CALL dsp_uso_refresh_diag(DspEngine* engine);
+
 #ifdef __cplusplus
 }
 #endif
